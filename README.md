@@ -17,7 +17,7 @@ Three Flutter clients share one Firebase project (`rescue-app-c79cf`) and **Fire
 Requires [Flutter](https://flutter.dev) (SDK `^3.11.0`) and a configured Android/Windows toolchain.
 
 ```bash
-git clone https://github.com/<your-account>/barangay-52-rescue.git
+git clone https://github.com/chuaadneyzabdiel-ctrl/barangay-52-rescue.git
 cd barangay-52-rescue
 ```
 
