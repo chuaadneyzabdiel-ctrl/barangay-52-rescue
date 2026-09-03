@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Barangay 52 APK Builder</title>
+  <style>
+    :root {
+      --bg: #0d1b2a;
+      --panel: #152238;
+      --card: #1b3a5c;
+      --text: #f4f7fb;
+      --muted: #9aa8b8;
+      --accent: #4ea1ff;
+      --danger: #e85d5d;
+      --ok: #3ddc84;
+      --warn: #f0c14b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at top, #1b3a5c 0%, var(--bg) 42%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+    h1 { margin: 0 0 6px; letter-spacing: 0.04em; }
+    .sub { color: var(--muted); margin-bottom: 22px; }
+    .warn {
+      background: #3a2d10;
+      border: 1px solid var(--warn);
+      color: #ffe9a8;
+      padding: 12px 14px;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .card {
+      background: rgba(21, 34, 56, 0.92);
+      border: 1px solid #2b4a72;
+      border-radius: 14px;
+      padding: 16px;
+      margin-top: 14px;
+    }
+    .step { color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+    label { display: block; margin: 10px 0 6px; font-weight: 600; }
+    input[type="text"], input[type="file"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #3d5d82;
+      background: #0d1b2a;
+      color: var(--text);
+    }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button, .chip {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid #4d7aaa;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    button.primary {
+      background: #2f6fbd;
+      font-weight: 700;
+      min-width: 140px;
+    }
+    button.primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.danger { border-color: var(--danger); color: #ffd0d0; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+    .chip.selected { outline: 2px solid var(--accent); }
+    .path {
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      color: #c5d8ee;
+      word-break: break-all;
+    }
+    .browser {
+      margin-top: 10px;
+      border: 1px solid #2b4a72;
+      border-radius: 10px;
+      overflow: hidden;
+      display: none;
+    }
+    .browser.open { display: block; }
+    .browser-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #102033;
+    }
+    .entries { max-height: 240px; overflow: auto; }
+    .entry {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-top: 1px solid #22344c;
+      cursor: pointer;
+    }
+    .entry:hover { background: #1b3050; }
+    .log {
+      background: #071018;
+      color: #b6f5c8;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      height: 280px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+    }
+    .ok { color: var(--ok); font-weight: 700; }
+    .err { color: var(--danger); font-weight: 700; }
+    dialog {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid #4d7aaa;
+      border-radius: 12px;
+      padding: 18px;
+      max-width: 520px;
+    }
+    dialog::backdrop { background: rgba(0,0,0,0.55); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Barangay 52 APK Builder</h1>
+    <p class="sub">Local-only tool. Builds a temp copy; GitHub <code>v1.0.0</code> is not changed.</p>
+    <div class="warn">Both apps currently share Android ID <code>com.caloocan.rescue.rescue_app</code>. They cannot both be installed on one phone unless you give this build a different ID.</div>
+    <div class="warn">A new Android ID may need a matching Firebase Android app for Google Sign-In. Realtime Database can still work.</div>
+
+    <section class="card">
+      <div class="step">1 · SOURCE APP</div>
+      <p>Select which Flutter project to build (Citizen or Responder, or browse to a folder).</p>
+      <div class="chips" id="knownApps"></div>
+      <div class="path" id="sourcePathLabel">No source selected</div>
+      <div class="row" style="margin-top:10px">
+        <button type="button" id="browseSource">Browse folders…</button>
+        <button type="button" id="selectSourceHere" disabled>Use this folder</button>
+      </div>
+      <div class="browser" id="sourceBrowser">
+        <div class="browser-head">
+          <span class="path" id="sourceBrowsePath"></span>
+          <span class="row">
+            <button type="button" id="sourceUp">Up</button>
+            <button type="button" id="sourceClose">Close</button>
+          </span>
+        </div>
+        <div class="entries" id="sourceEntries"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="step">2 · OUTPUT LOCATION</div>
+      <p>Choose the folder (and filename) where the finished APK will be saved.</p>
+      <label>Output folder</label>
+      <div class="path" id="outputDirLabel">No output folder selected</div>
+      <div class="row" style="margin-top:10px">
+        <button type="button" id="browseOutput">Browse folders…</button>
+        <button type="button" id="selectOutputHere" disabled>Use this folder</button>
+      </div>
+      <div class="browser" id="outputBrowser">
+        <div class="browser-head">
+          <span class="path" id="outputBrowsePath"></span>
+          <span class="row">
+            <button type="button" id="outputUp">Up</button>
+            <button type="button" id="outputClose">Close</button>
+          </span>
+        </div>
+        <div class="entries" id="outputEntries"></div>
+      </div>
+      <label for="filename">APK filename</label>
+      <input id="filename" type="text" placeholder="responder-release.apk" />
+    </section>
+
+    <section class="card">
+      <div class="step">3 · ANDROID APPLICATION ID</div>
+      <label for="appId">Required · must look like com.example.app</label>
+      <input id="appId" type="text" value="com.caloocan.rescue.rescue_app" />
+      <p class="sub">Examples: <code>com.caloocan.rescue.citizen</code> / <code>com.caloocan.rescue.responder</code></p>
+    </section>
+
+    <section class="card">
+      <div class="step">4 · APP NAME (optional)</div>
+      <label for="appName">Launcher name under the icon</label>
+      <input id="appName" type="text" placeholder="Leave blank to keep the project name" />
+    </section>
+
+    <section class="card">
+      <div class="step">5 · APK ICON (optional)</div>
+      <label for="icon">PNG, 1024×1024 preferred. Skip to keep the existing icon.</label>
+      <input id="icon" type="file" accept="image/png" />
+    </section>
+
+    <section class="card">
+      <div class="step">6 · BUILD</div>
+      <div class="row">
+        <button class="primary" id="buildBtn" disabled>Build APK</button>
+        <button class="danger" id="cancelBtn" disabled>Cancel</button>
+      </div>
+      <p class="sub" id="buildHint">Select a source app (step 1) and an output folder (step 2) before building.</p>
+      <p id="result"></p>
+      <pre class="log" id="log"></pre>
+    </section>
+  </main>
+
+  <dialog id="conflictDialog">
+    <p id="conflictText"></p>
+    <div class="row">
+      <button type="button" id="overwriteBtn">Overwrite</button>
+      <button type="button" id="renameBtn">Rename</button>
+      <button type="button" id="abortBtn">Cancel</button>
+    </div>
+  </dialog>
+
+  <script>
+    const state = {
+      sourcePath: "",
+      outputDir: "",
+      browseSource: "",
+      browseOutput: "",
+      sourceList: null,
+      outputList: null,
+      jobId: null,
+      es: null,
+      pendingPayload: null,
+      drives: [],
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+
+    function appendLog(line) {
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function canBuild() {
+      const ready = !!(state.sourcePath && state.outputDir) && !state.jobId;
+      $("buildBtn").disabled = !ready;
+      const hint = $("buildHint");
+      if (state.jobId) {
+        hint.textContent = "Build running…";
+      } else if (!state.sourcePath) {
+        hint.textContent = "Click Citizen or Responder in step 1 first. Build APK stays disabled until a source is selected.";
+      } else if (!state.outputDir) {
+        hint.textContent = "Still need an output folder: in step 2 click Browse folders, then “Use this folder”.";
+      } else {
+        hint.textContent = "Ready. Click Build APK.";
+      }
+    }
+
+    function appIdOk(id) {
+      return /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*){2,}$/.test(id);
+    }
+
+    async function api(url) {
+      const res = await fetch(url);
+      return res.json();
+    }
+
+    function renderEntries(target, data) {
+      $(target + "BrowsePath").textContent = data.path;
+      const box = $(target + "Entries");
+      box.innerHTML = "";
+      if (state.drives.length) {
+        const drives = document.createElement("div");
+        drives.className = "row";
+        drives.style.padding = "8px 12px";
+        state.drives.forEach((d) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = d;
+          b.onclick = () => openDir(target, d);
+          drives.appendChild(b);
+        });
+        box.appendChild(drives);
+      }
+      (data.entries || []).forEach((e) => {
+        if (!e.isDir) return;
+        const div = document.createElement("div");
+        div.className = "entry";
+        div.innerHTML = `<span>📁 ${e.name}</span>`;
+        div.onclick = () => openDir(target, e.path);
+        box.appendChild(div);
+      });
+      $(target + "Up").disabled = !data.parent;
+    }
+
+    async function openDir(target, path) {
+      const data = await api("/api/list?path=" + encodeURIComponent(path));
+      if (data.error) {
+        appendLog("ERROR: " + data.error);
+        return;
+      }
+      if (target === "source") {
+        state.sourceList = data;
+        state.browseSource = data.path;
+        $("sourceBrowser").classList.add("open");
+        $("selectSourceHere").disabled = false;
+        renderEntries("source", data);
+      } else {
+        state.outputList = data;
+        state.browseOutput = data.path;
+        $("outputBrowser").classList.add("open");
+        $("selectOutputHere").disabled = false;
+        renderEntries("output", data);
+      }
+    }
+
+    async function inspectSource(path) {
+      const data = await api("/api/inspect?path=" + encodeURIComponent(path));
+      if (!data.valid) {
+        alert(data.error || "Not a Flutter Android app.");
+        return false;
+      }
+      state.sourcePath = data.path;
+      $("sourcePathLabel").textContent = data.path;
+      $("appId").value = data.applicationId || "";
+      $("appName").value = data.appName || "";
+      if (!$("filename").value) {
+        $("filename").value = data.name + "-release.apk";
+      }
+      canBuild();
+      return true;
+    }
+
+    async function loadMeta() {
+      const meta = await api("/api/meta");
+      const wrap = $("knownApps");
+      meta.knownApps.forEach((app) => {
+        const btn = document.createElement("button");
+        btn.className = "chip";
+        btn.type = "button";
+        btn.textContent = app.label;
+        btn.onclick = async () => {
+          [...wrap.children].forEach((c) => c.classList.remove("selected"));
+          btn.classList.add("selected");
+          await inspectSource(app.path);
+        };
+        wrap.appendChild(btn);
+      });
+      state.browseSource = meta.workspace;
+      state.drives = meta.drives || [];
+      const desktop = meta.desktop || meta.workspace;
+      state.browseOutput = desktop;
+      state.outputDir = desktop;
+      $("outputDirLabel").textContent = desktop;
+      canBuild();
+    }
+
+    $("browseSource").onclick = () => openDir("source", state.browseSource || "/");
+    $("browseOutput").onclick = () => openDir("output", state.browseOutput || "/");
+    $("sourceClose").onclick = () => $("sourceBrowser").classList.remove("open");
+    $("outputClose").onclick = () => $("outputBrowser").classList.remove("open");
+    $("sourceUp").onclick = () => {
+      if (state.sourceList && state.sourceList.parent) openDir("source", state.sourceList.parent);
+    };
+    $("outputUp").onclick = () => {
+      if (state.outputList && state.outputList.parent) openDir("output", state.outputList.parent);
+    };
+    $("selectSourceHere").onclick = async () => {
+      await inspectSource(state.browseSource);
+    };
+    $("selectOutputHere").onclick = () => {
+      state.outputDir = state.browseOutput;
+      $("outputDirLabel").textContent = state.outputDir;
+      $("outputBrowser").classList.remove("open");
+      canBuild();
+    };
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function collectPayload(conflict) {
+      const id = $("appId").value.trim();
+      if (!appIdOk(id)) {
+        alert("Android ID must look like com.example.app (at least two dots).");
+        return null;
+      }
+      const icon = $("icon").files[0];
+      let iconPngBase64 = null;
+      if (icon) {
+        if (!icon.name.toLowerCase().endsWith(".png") && icon.type !== "image/png") {
+          alert("Icon must be a PNG.");
+          return null;
+        }
+        iconPngBase64 = await fileToBase64(icon);
+      }
+      return {
+        sourcePath: state.sourcePath,
+        outputDir: state.outputDir,
+        filename: $("filename").value.trim(),
+        applicationId: id,
+        appName: $("appName").value.trim(),
+        iconPngBase64,
+        conflict: conflict || null,
+      };
+    }
+
+    function listen(jobId) {
+      if (state.es) state.es.close();
+      state.es = new EventSource("/api/build/" + jobId + "/log");
+      state.es.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.event === "log") appendLog(msg.line);
+        if (msg.event === "exists") {
+          $("conflictText").textContent = "This APK already exists:\n" + msg.path + "\nOverwrite, or save with a new name?";
+          state.pendingPayload = true;
+          $("conflictDialog").showModal();
+        }
+        if (msg.event === "success") {
+          $("result").innerHTML = `<span class="ok">Saved:</span> <span class="path">${msg.path}</span> · <a href="${msg.download}" style="color:#8ec7ff">Download APK</a>`;
+        }
+        if (msg.event === "error") {
+          $("result").innerHTML = `<span class="err">Build failed.</span> ${msg.message || ""}`;
+        }
+        if (msg.event === "done") {
+          state.jobId = null;
+          $("cancelBtn").disabled = true;
+          canBuild();
+          state.es.close();
+        }
+      };
+    }
+
+    async function startBuild(conflict) {
+      const payload = await collectPayload(conflict);
+      if (!payload) return;
+      $("result").textContent = "";
+      if (!conflict) logEl.textContent = "";
+      appendLog("Starting build…");
+      $("buildBtn").disabled = true;
+      const res = await fetch("/api/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        appendLog("ERROR: " + (data.error || res.statusText));
+        canBuild();
+        return;
+      }
+      state.jobId = data.jobId;
+      $("cancelBtn").disabled = false;
+      listen(data.jobId);
+    }
+
+    $("buildBtn").onclick = () => startBuild(null);
+    $("cancelBtn").onclick = async () => {
+      if (!state.jobId) return;
+      await fetch("/api/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: state.jobId }),
+      });
+      appendLog("Cancel requested…");
+    };
+    $("overwriteBtn").onclick = () => {
+      $("conflictDialog").close();
+      startBuild("overwrite");
+    };
+    $("renameBtn").onclick = () => {
+      $("conflictDialog").close();
+      startBuild("rename");
+    };
+    $("abortBtn").onclick = () => {
+      $("conflictDialog").close();
+      $("result").textContent = "Build cancelled (file already exists).";
+      canBuild();
+    };
+
+    loadMeta().catch((e) => appendLog("Failed to load: " + e));
+  </script>
+</body>
+</html>
