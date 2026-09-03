@@ -1,0 +1,193 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function roleOf(uid) {
+      return userDoc(uid).data.role;
+    }
+
+    function isLGU() {
+      return isAuthed() && roleOf(request.auth.uid) == 'lgu';
+    }
+
+    function isResponder() {
+      return isAuthed() && roleOf(request.auth.uid) == 'responder';
+    }
+
+    function isCitizen() {
+      return isAuthed() && roleOf(request.auth.uid) == 'citizen';
+    }
+
+    function nonEmptyString(s, minLen, maxLen) {
+      return s is string
+        && s.size() >= minLen
+        && s.size() <= maxLen
+        && s.matches('.*\\S.*');
+    }
+
+    function validPhilLocation(loc) {
+      return loc is map
+        && loc.lat is number
+        && loc.lng is number
+        && loc.lat >= 4.0 && loc.lat <= 21.0
+        && loc.lng >= 116.0 && loc.lng <= 127.0;
+    }
+
+    function validSosStatus(status) {
+      return status in ['pending', 'accepted', 'completed', 'cancelled'];
+    }
+
+    function validHazardType(kind) {
+      return kind in ['flood', 'fire', 'road_obstruction', 'other'];
+    }
+
+    function immutableKeysUnchanged(keys) {
+      return request.resource.data.diff(resource.data).changedKeys().hasAny(keys) == false;
+    }
+
+    // users/{userId}
+    match /users/{userId} {
+      allow read: if isLGU() || (isAuthed() && request.auth.uid == userId);
+
+      // Allow self-create for citizen profile only.
+      allow create: if isAuthed()
+        && request.auth.uid == userId
+        && request.resource.data.role == 'citizen'
+        && nonEmptyString(request.resource.data.name, 1, 100)
+        && request.resource.data.email is string;
+
+      // User can update own doc, but cannot change role.
+      allow update: if isAuthed()
+        && request.auth.uid == userId
+        && request.resource.data.role == resource.data.role
+        && nonEmptyString(request.resource.data.name, 1, 100)
+        && request.resource.data.email == resource.data.email;
+
+      // LGU can update user documents as admin.
+      allow update: if isLGU();
+
+      allow delete: if false;
+    }
+
+    // guests/{deviceId}
+    match /guests/{deviceId} {
+      allow read: if isLGU();
+      // Client writes blocked. Use Cloud Functions/Admin SDK only.
+      allow create, update, delete: if false;
+    }
+
+    // sos/{sosId}
+    match /sos/{sosId} {
+      allow read: if isLGU()
+        || (isAuthed() && resource.data.citizenId == request.auth.uid)
+        || (isResponder() && resource.data.assignedResponderId == request.auth.uid);
+
+      // Registered citizen creates own SOS from client.
+      // Guest creation must go through Cloud Functions.
+      allow create: if isCitizen()
+        && request.resource.data.citizenId == request.auth.uid
+        && request.resource.data.deviceId is string
+        && request.resource.data.isGuest == false
+        && request.resource.data.guestName == null
+        && validPhilLocation(request.resource.data.location)
+        && request.resource.data.assignedResponderId == null
+        && request.resource.data.cancelReason == null
+        && request.resource.data.cancelledAfterDispatch == false
+        && request.resource.data.resolvedAt == null
+        && validSosStatus(request.resource.data.status)
+        && request.resource.data.status == 'pending';
+
+      // Assigned responder can transition pending -> accepted -> completed.
+      allow update: if isResponder()
+        && resource.data.assignedResponderId == request.auth.uid
+        && immutableKeysUnchanged([
+            'citizenId',
+            'deviceId',
+            'isGuest',
+            'guestName',
+            'location',
+            'createdAt'
+          ])
+        && (
+          (resource.data.status == 'pending'
+            && request.resource.data.status == 'accepted')
+          ||
+          (resource.data.status == 'accepted'
+            && request.resource.data.status == 'completed'
+            && request.resource.data.resolvedAt is timestamp)
+        );
+
+      // Original citizen can cancel, reason min 10 chars.
+      allow update: if isAuthed()
+        && resource.data.citizenId == request.auth.uid
+        && immutableKeysUnchanged([
+            'citizenId',
+            'deviceId',
+            'isGuest',
+            'guestName',
+            'location',
+            'createdAt'
+          ])
+        && request.resource.data.status == 'cancelled'
+        && request.resource.data.cancelReason is string
+        && request.resource.data.cancelReason.size() >= 10;
+
+      // Guest cancel handled by Cloud Functions for secure device ownership checks.
+      allow delete: if false;
+    }
+
+    // responders/{userId}
+    match /responders/{userId} {
+      // Hide responder documents from citizens/guests.
+      allow read: if isLGU() || (isResponder() && request.auth.uid == userId);
+
+      // Responder may update operational data only on own doc.
+      allow update: if isResponder()
+        && request.auth.uid == userId
+        && resource.data.approvedByLgu == true
+        && request.resource.data.approvedByLgu == resource.data.approvedByLgu
+        && request.resource.data.unitName == resource.data.unitName
+        && request.resource.data.isOnline is bool
+        && (
+          request.resource.data.isOnline == false
+          ||
+          validPhilLocation(request.resource.data.currentLocation)
+        );
+
+      // LGU may only update approval flag directly.
+      allow update: if isLGU()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['approvedByLgu']);
+
+      // Create/delete responder profiles should be done by Cloud Functions.
+      allow create, delete: if false;
+    }
+
+    // hazards/{hazardId}
+    match /hazards/{hazardId} {
+      // Needed by responder/citizen/guest route hazard avoidance.
+      allow read: if true;
+
+      allow create, update: if isLGU()
+        && validHazardType(request.resource.data.type)
+        && validPhilLocation(request.resource.data.location)
+        && nonEmptyString(request.resource.data.description, 10, 1000)
+        && request.resource.data.createdBy is string;
+
+      allow delete: if false;
+    }
+
+    // auditLogs/{logId}
+    match /auditLogs/{logId} {
+      allow read: if isLGU();
+      // Cloud Functions/Admin SDK only.
+      allow create, update, delete: if false;
+    }
+  }
+}

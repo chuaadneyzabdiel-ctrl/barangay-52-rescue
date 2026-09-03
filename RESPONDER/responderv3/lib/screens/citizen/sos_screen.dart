@@ -1,0 +1,2468 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../../map/rescue_map_tiles.dart';
+import '../../models/map_layer_models.dart';
+import '../../models/rescue_models.dart';
+import '../../widgets/chat_fab_with_badge.dart';
+import '../../widgets/map_layers_sheet.dart';
+import '../../widgets/rescue_map_tile_layer.dart';
+import '../../providers/rescue_provider.dart';
+import '../../services/osrm_routing_service.dart';
+import '../../services/local_notification_service.dart';
+import '../../services/map_layer_data_service.dart';
+import '../../utils/geo_utils.dart';
+import '../../utils/facility_search_utils.dart';
+import '../../widgets/sos_chat_panel.dart';
+import '../dashboard/account_center_screen.dart';
+import '../role_selection_screen.dart';
+
+class SOSScreen extends StatefulWidget {
+  const SOSScreen({super.key});
+
+  @override
+  State<SOSScreen> createState() => _SOSScreenState();
+}
+
+class _SOSScreenState extends State<SOSScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  static const String _kQueuedSosKey = 'queued_sos_request';
+  bool _sending = false;
+  SOSType _selectedSosType = SOSType.medical;
+  SOSRequest? _lastRequest;
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
+  StreamSubscription? _dispatchSub;
+  StreamSubscription? _responderLocationSub;
+  StreamSubscription? _restoreSosSub;
+  StreamSubscription? _sosCompletedSub;
+  Map<String, dynamic>? _dispatchInfo;
+  LatLng? _responderPosition;
+  LatLng? _lastFacilityRoutingDestination;
+  final MapController _mapController = MapController();
+  bool _trackingMapUserInteracted = false;
+  bool _trackingMapAutoFitDone = false;
+
+  List<LatLng> _routeToMe = [];
+  double _routeDistanceKm = 0;
+  double _routeEtaMinutes = 0;
+  Timer? _routeRefreshTimer;
+  Timer? _cancelPromptTimer;
+  final OsrmRoutingService _osrm = OsrmRoutingService();
+
+  bool _userMapExpanded = false;
+  bool _userMapVisible = true;
+  bool _citizenMapFullScreen = false;
+  bool _chatSheetOpen = false;
+  bool _showRescueCompleteOverlay = false;
+  Timer? _rescueCompleteOverlayTimer;
+  bool _notifiedResponderAssigned = false;
+  final MapController _userMapController = MapController();
+  final TextEditingController _detailsController = TextEditingController();
+  List<MapLayerPOI> _citizenMedicalFacilities = const [];
+  MapLayerPOI? _preferredMedicalFacility;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.15).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+    _citizenMedicalFacilities = [
+      ...MapLayerDataService.getLayerData(MapLayerType.hospitals),
+      ...MapLayerDataService.getLayerData(MapLayerType.threeSCenters),
+    ];
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final provider = context.read<RescueProvider>();
+      await provider.persistSessionRole(UserRole.citizen);
+      await provider.refreshLocationStatus();
+      provider.initLocation();
+      if (!mounted) return;
+      await provider.loadActiveSOS();
+      if (!mounted) return;
+      final id = provider.activeSosId;
+      if (id != null) _restoreActiveSOS(id);
+      // Try to send any SOS that was queued while offline.
+      await _trySendQueuedSOS();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        _lastRequest != null &&
+        _dispatchInfo == null) {
+      _showCancelPendingPromptDialog();
+    }
+  }
+
+  void _restoreActiveSOS(String sosId) {
+    final provider = context.read<RescueProvider>();
+    provider.startCitizenLocationUpdates(sosId);
+
+    _restoreSosSub?.cancel();
+    _restoreSosSub = provider.firebaseSync.watchSOS(sosId).listen((sos) async {
+      if (sos != null && mounted) {
+        setState(() => _lastRequest = sos);
+        _startCancelPromptTimer();
+      } else if (sos == null && mounted) {
+        await _handleSosEnded(sosId);
+      }
+    });
+
+    _dispatchSub?.cancel();
+    _dispatchSub = provider.firebaseSync.watchDispatch(sosId).listen((info) {
+      if (info != null && mounted) {
+        final routingTo = (info['routingTo'] as String?)?.toLowerCase().trim();
+        final lat = info['destinationLat'];
+        final lng = info['destinationLng'];
+        if (routingTo == 'facility' && lat is num && lng is num) {
+          _lastFacilityRoutingDestination =
+              LatLng(lat.toDouble(), lng.toDouble());
+        }
+        setState(() => _dispatchInfo = info);
+        unawaited(_refreshRoute());
+        if (!_notifiedResponderAssigned) {
+          _notifiedResponderAssigned = true;
+          LocalNotificationService().showResponderAssigned(
+            info['unitCallSign'] as String? ?? 'Responder',
+          );
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _responderPosition == null) return;
+          if (!_trackingMapUserInteracted && !_trackingMapAutoFitDone) {
+            _trackingMapAutoFitDone = true;
+            _fitBothMarkers();
+          }
+        });
+        final unitId = info['unitId'] as String?;
+        if (unitId != null && _responderLocationSub == null) {
+          _responderLocationSub = provider.firebaseSync
+              .watchUnitLocation(unitId)
+              .listen((pos) {
+            if (pos != null && mounted) {
+              setState(() => _responderPosition = pos);
+              unawaited(_refreshRoute());
+              // First time we have both markers: fit once (dispatch may arrive before GPS stream)
+              if (!_trackingMapUserInteracted && !_trackingMapAutoFitDone) {
+                final citizenPos = provider.currentPosition;
+                if (citizenPos != null) {
+                  _trackingMapAutoFitDone = true;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) _fitBothMarkers();
+                  });
+                }
+              }
+            }
+          });
+          _routeRefreshTimer?.cancel();
+          _routeRefreshTimer =
+              Timer.periodic(const Duration(seconds: 8), (_) => _refreshRoute());
+        }
+      }
+    });
+  }
+
+  /// Cancel flow: different copy if a responder has already accepted.
+  void _showCancelSOSDialog() {
+    if (_lastRequest == null || !mounted) return;
+    if (_dispatchInfo != null) {
+      _showCancelAfterDispatchDialog();
+    } else {
+      _showCancelPendingPromptDialog();
+    }
+  }
+
+  void _showCancelPendingPromptDialog() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('SOS still active'),
+        content: const Text(
+          'Your SOS is still active. Do you want to cancel it?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('No, keep it'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _cancelSOS();
+            },
+            child: const Text('Yes, cancel SOS'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showCancelAfterDispatchDialog() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Responder is en route'),
+        content: const Text(
+          'A rescue unit is already assigned and may be traveling to you. '
+          'Cancelling will stop the response and notify dispatch systems.\n\n'
+          'Are you sure you want to cancel this SOS?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep SOS'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade800),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Cancel SOS anyway'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Final confirmation'),
+        content: const Text(
+          'This cannot be undone. Cancel the emergency request now?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Go back'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade900),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Yes, cancel'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      await _cancelSOS();
+    }
+  }
+
+  void _startCancelPromptTimer() {
+    _cancelPromptTimer?.cancel();
+    _cancelPromptTimer = Timer.periodic(
+      const Duration(minutes: 2),
+      (_) {
+        if (mounted && _lastRequest != null && _dispatchInfo == null) {
+          _showCancelPendingPromptDialog();
+        }
+      },
+    );
+  }
+
+  void _cleanupEndedSosState() {
+    if (!mounted) return;
+    final provider = context.read<RescueProvider>();
+    _dispatchSub?.cancel();
+    _responderLocationSub?.cancel();
+    _restoreSosSub?.cancel();
+    _sosCompletedSub?.cancel();
+    _routeRefreshTimer?.cancel();
+    _cancelPromptTimer?.cancel();
+    provider.clearActiveSOS();
+    provider.stopCitizenLocationUpdates();
+  }
+
+  void _handleRescueCompleted() {
+    if (!mounted) return;
+    _cleanupEndedSosState();
+    setState(() {
+      _lastRequest = null;
+      _dispatchInfo = null;
+      _responderPosition = null;
+      _routeToMe = [];
+      _showRescueCompleteOverlay = true;
+    });
+    _rescueCompleteOverlayTimer?.cancel();
+    _rescueCompleteOverlayTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) {
+        setState(() => _showRescueCompleteOverlay = false);
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Rescue completed. Thank you!'),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  Future<void> _handleSosEnded(String sosId) async {
+    final provider = context.read<RescueProvider>();
+    final status = await provider.firebaseSync.getSOSHistoryStatus(sosId);
+    if (!mounted) return;
+    if (status == SOSStatus.completed) {
+      _handleRescueCompleted();
+      return;
+    }
+
+    _cleanupEndedSosState();
+    setState(() {
+      _lastRequest = null;
+      _dispatchInfo = null;
+      _responderPosition = null;
+      _routeToMe = [];
+      _showRescueCompleteOverlay = false;
+    });
+    _rescueCompleteOverlayTimer?.cancel();
+  }
+
+  Future<void> _cancelSOS() async {
+    if (_lastRequest == null) return;
+    final sosId = _lastRequest!.id;
+    final provider = context.read<RescueProvider>();
+
+    _dispatchSub?.cancel();
+    _responderLocationSub?.cancel();
+    _restoreSosSub?.cancel();
+    _sosCompletedSub?.cancel();
+    _routeRefreshTimer?.cancel();
+    _cancelPromptTimer?.cancel();
+    _rescueCompleteOverlayTimer?.cancel();
+
+    await provider.cancelCitizenSOS(sosId);
+
+    if (!mounted) return;
+    setState(() {
+      _lastRequest = null;
+      _dispatchInfo = null;
+      _responderPosition = null;
+      _routeToMe = [];
+      _notifiedResponderAssigned = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('SOS cancelled.'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+  }
+
+  Future<void> _sendSOS() async {
+    if (_sending) return;
+    setState(() => _sending = true);
+
+    try {
+      final provider = context.read<RescueProvider>();
+      // Ensure citizen profile is loaded (in case screen was opened directly).
+      await provider.loadCitizenProfile();
+
+      if (provider.currentPosition == null) {
+        await provider.initLocation();
+      }
+
+      final name = provider.citizenName ?? 'Citizen User';
+      final id = provider.citizenId ?? 'citizen-${name.hashCode}';
+
+      final details = _detailsController.text.trim();
+      final preferred = _selectedSosType == SOSType.medical
+          ? _preferredMedicalFacility
+          : null;
+      final request = await provider.createSOS(
+        citizenId: id,
+        citizenName: name,
+        message: details.isEmpty ? null : details,
+        priority: SOSPriority.high,
+        sosType: _selectedSosType,
+        preferredFacilityId: preferred?.id,
+        preferredFacilityName: preferred?.name,
+        preferredFacilityLocation: preferred?.position,
+      );
+      _detailsController.clear();
+
+      provider.startCitizenLocationUpdates(request.id);
+
+      setState(() {
+        _lastRequest = request;
+        _sending = false;
+      });
+
+      _watchForDispatch(request.id);
+      _sosCompletedSub?.cancel();
+      _sosCompletedSub = provider.firebaseSync.watchSOS(request.id).listen((sos) async {
+        if (sos == null && mounted) {
+          await _handleSosEnded(request.id);
+        }
+      });
+      _startCancelPromptTimer();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('SOS Sent! Help is on the way.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _sending = false);
+      if (mounted) {
+        // Queue the SOS locally so it can be retried when the network is available.
+        await _queueSOSForRetry();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Failed to send SOS — it will be queued and retried when your connection is back.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _queueSOSForRetry() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final provider = context.read<RescueProvider>();
+      final pos = provider.currentPosition;
+      final payload = <String, Object?>{
+        'sosType': _selectedSosType.name,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        if (pos != null) 'lat': pos.latitude,
+        if (pos != null) 'lng': pos.longitude,
+        if (_preferredMedicalFacility != null)
+          'preferredFacilityId': _preferredMedicalFacility!.id,
+        if (_preferredMedicalFacility != null)
+          'preferredFacilityName': _preferredMedicalFacility!.name,
+        if (_preferredMedicalFacility != null)
+          'preferredFacilityLat': _preferredMedicalFacility!.position.latitude,
+        if (_preferredMedicalFacility != null)
+          'preferredFacilityLng': _preferredMedicalFacility!.position.longitude,
+      };
+      await prefs.setString(_kQueuedSosKey, jsonEncode(payload));
+    } catch (_) {
+      // Best-effort only; ignore failures.
+    }
+  }
+
+  Future<void> _openPreferredFacilitySheet() async {
+    final controller = TextEditingController();
+    String query = '';
+    bool showNearestSuggestions = false;
+    List<MapLayerPOI> nearestRows = const [];
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1B2838),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final q = query.trim();
+            final rows = showNearestSuggestions
+                ? nearestRows
+                : _citizenMedicalFacilities.where((f) {
+                    return FacilitySearchUtils.matches(f, q);
+                  }).toList();
+            void pickNearest() {
+              final provider = context.read<RescueProvider>();
+              final base = provider.currentPosition ?? _lastRequest?.location;
+              if (base == null || _citizenMedicalFacilities.isEmpty) return;
+              final sorted = List<MapLayerPOI>.from(_citizenMedicalFacilities)
+                ..sort((a, b) => GeoUtils.haversineKm(base, a.position)
+                    .compareTo(GeoUtils.haversineKm(base, b.position)));
+              setLocal(() {
+                showNearestSuggestions = true;
+                nearestRows = sorted.take(8).toList();
+                query = '';
+                controller.clear();
+              });
+            }
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 12,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Preferred hospital or clinic (optional)',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: controller,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        hintText: 'Search hospital / clinic',
+                        hintStyle: TextStyle(color: Colors.white54),
+                        prefixIcon: Icon(Icons.search, color: Colors.white70),
+                      ),
+                      onChanged: (v) => setLocal(() {
+                        query = v;
+                        showNearestSuggestions = false;
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: FilledButton.tonalIcon(
+                        onPressed: pickNearest,
+                        icon: const Icon(Icons.near_me),
+                        label: const Text('Nearest facility'),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 280,
+                      child: ListView.builder(
+                        itemCount: rows.length,
+                        itemBuilder: (_, i) {
+                          final it = rows[i];
+                          return ListTile(
+                            leading: const Icon(Icons.local_hospital, color: Colors.redAccent),
+                            title: Text(
+                              it.name,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                            subtitle: Text(
+                              '${showNearestSuggestions ? '${(GeoUtils.haversineKm(context.read<RescueProvider>().currentPosition ?? _lastRequest?.location ?? it.position, it.position) * 1000).round()} m • ' : ''}${it.city ?? ''} • ${it.facilityType ?? 'hospital'}\n'
+                              '${_facilityOpenLabel(it)}${it.phone != null ? ' • ${it.phone}' : ''}',
+                              style: const TextStyle(color: Colors.white70),
+                            ),
+                            isThreeLine: true,
+                            onTap: () {
+                              setState(() => _preferredMedicalFacility = it);
+                              Navigator.pop(ctx);
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  String _facilityOpenLabel(MapLayerPOI poi) {
+    if ((poi.openStatusText ?? '').trim().isNotEmpty) return poi.openStatusText!.trim();
+    if (poi.isOpenNow == true) return 'Open now';
+    if (poi.isOpenNow == false) return 'Closed now';
+    return 'Status unknown';
+  }
+
+  Future<void> _trySendQueuedSOS() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kQueuedSosKey);
+      if (raw == null || raw.isEmpty) return;
+
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final typeName = data['sosType'] as String?;
+      final type = typeName != null
+          ? SOSType.values.firstWhere(
+              (t) => t.name == typeName,
+              orElse: () => SOSType.medical,
+            )
+          : SOSType.medical;
+
+      final provider = context.read<RescueProvider>();
+      await provider.loadCitizenProfile();
+      if (provider.currentPosition == null) {
+        await provider.initLocation();
+      }
+
+      final name = provider.citizenName ?? 'Citizen User';
+      final id = provider.citizenId ?? 'citizen-${name.hashCode}';
+
+      // If there is already an active SOS, don't send another; keep queued.
+      if (provider.activeSosId != null) return;
+
+      final request = await provider.createSOS(
+        citizenId: id,
+        citizenName: name,
+        message: 'Emergency! Need immediate assistance (queued).',
+        priority: SOSPriority.high,
+        sosType: type,
+        preferredFacilityId: data['preferredFacilityId'] as String?,
+        preferredFacilityName: data['preferredFacilityName'] as String?,
+        preferredFacilityLocation: (data['preferredFacilityLat'] is num &&
+                data['preferredFacilityLng'] is num)
+            ? LatLng(
+                (data['preferredFacilityLat'] as num).toDouble(),
+                (data['preferredFacilityLng'] as num).toDouble(),
+              )
+            : null,
+      );
+
+      provider.startCitizenLocationUpdates(request.id);
+      _lastRequest = request;
+      _sending = false;
+      _watchForDispatch(request.id);
+      _sosCompletedSub?.cancel();
+      _sosCompletedSub =
+          provider.firebaseSync.watchSOS(request.id).listen((sos) async {
+        if (sos == null && mounted) {
+          await _handleSosEnded(request.id);
+        }
+      });
+      _startCancelPromptTimer();
+
+      await prefs.remove(_kQueuedSosKey);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Queued SOS has been sent.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (_) {
+      // If retry fails, keep the queued SOS for a future attempt.
+    }
+  }
+
+  void _watchForDispatch(String sosId) {
+    final provider = context.read<RescueProvider>();
+
+    _dispatchSub = provider.firebaseSync.watchDispatch(sosId).listen((info) {
+      if (info == null || !mounted) return;
+
+      final routingTo = (info['routingTo'] as String?)?.toLowerCase().trim();
+      final lat = info['destinationLat'];
+      final lng = info['destinationLng'];
+      if (routingTo == 'facility' && lat is num && lng is num) {
+        _lastFacilityRoutingDestination =
+            LatLng(lat.toDouble(), lng.toDouble());
+      }
+      setState(() => _dispatchInfo = info);
+      unawaited(_refreshRoute());
+      if (!_notifiedResponderAssigned) {
+        _notifiedResponderAssigned = true;
+        LocalNotificationService().showResponderAssigned(
+          info['unitCallSign'] as String? ?? 'Responder',
+        );
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _responderPosition == null) return;
+        if (!_trackingMapUserInteracted && !_trackingMapAutoFitDone) {
+          _trackingMapAutoFitDone = true;
+          _fitBothMarkers();
+        }
+      });
+
+      final unitId = info['unitId'] as String?;
+      if (unitId != null && _responderLocationSub == null) {
+        _responderLocationSub = provider.firebaseSync
+            .watchUnitLocation(unitId)
+            .listen((pos) {
+          if (pos != null && mounted) {
+            setState(() => _responderPosition = pos);
+            unawaited(_refreshRoute());
+            if (!_trackingMapUserInteracted && !_trackingMapAutoFitDone) {
+              final citizenPos = provider.currentPosition;
+              if (citizenPos != null) {
+                _trackingMapAutoFitDone = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _fitBothMarkers();
+                });
+              }
+            }
+          }
+        });
+
+        _routeRefreshTimer?.cancel();
+        _routeRefreshTimer =
+            Timer.periodic(const Duration(seconds: 8), (_) => _refreshRoute());
+      }
+    });
+  }
+
+  Future<void> _refreshRoute() async {
+    final citizenPos = context.read<RescueProvider>().currentPosition;
+    if (_responderPosition == null) return;
+
+    // Citizen should see the current destination:
+    // - Before pickup: responder → citizen (SOS location)
+    // - After pickup / transporting: responder → facility (destinationLat/Lng from dispatch progress)
+    LatLng destination = citizenPos ?? _lastRequest?.location ?? _responderPosition!;
+    final routingTo = (_dispatchInfo?['routingTo'] as String?)?.toLowerCase().trim();
+    if (routingTo == 'facility') {
+      final lat = _dispatchInfo?['destinationLat'];
+      final lng = _dispatchInfo?['destinationLng'];
+      if (lat is num && lng is num) {
+        destination = LatLng(lat.toDouble(), lng.toDouble());
+      } else if (_lastFacilityRoutingDestination != null) {
+        destination = _lastFacilityRoutingDestination!;
+      }
+    }
+
+    try {
+      final result = await _osrm.getRoute(_responderPosition!, destination);
+      if (!result.isEmpty && mounted) {
+        setState(() {
+          _routeToMe = result.points;
+          _routeDistanceKm = result.distanceKm;
+          _routeEtaMinutes = result.durationMinutes;
+        });
+      }
+    } catch (_) {
+      // Fallback: straight-line estimate
+      if (mounted) {
+        final dist = GeoUtils.haversineKm(_responderPosition!, destination);
+        setState(() {
+          _routeToMe = [];
+          _routeDistanceKm = dist;
+          _routeEtaMinutes = dist / 0.5;
+        });
+      }
+    }
+  }
+
+  void _fitBothMarkers() {
+    final citizenPos = context.read<RescueProvider>().currentPosition;
+    if (_responderPosition == null || citizenPos == null) return;
+
+    final bounds = LatLngBounds.fromPoints([citizenPos, _responderPosition!]);
+    try {
+      _mapController.fitCamera(
+        CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(80)),
+      );
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pulseController.dispose();
+    _dispatchSub?.cancel();
+    _responderLocationSub?.cancel();
+    _restoreSosSub?.cancel();
+    _sosCompletedSub?.cancel();
+    _routeRefreshTimer?.cancel();
+    _cancelPromptTimer?.cancel();
+    _rescueCompleteOverlayTimer?.cancel();
+    try {
+      final provider = context.read<RescueProvider>();
+      // While an SOS is still active, keep streaming location to Firebase even if this screen is closed.
+      if (provider.activeSosId == null) {
+        provider.stopCitizenLocationUpdates();
+      }
+    } catch (_) {}
+    _mapController.dispose();
+    _userMapController.dispose();
+    _detailsController.dispose();
+    _osrm.dispose();
+    super.dispose();
+  }
+
+  Future<void> _confirmBackToMain(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Go back to main screen?'),
+        content: const Text(
+          'You will leave this screen. Your citizen session stays signed in until you use '
+          'Account Center → Log out.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Yes, go back'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      final provider = context.read<RescueProvider>();
+      await provider.logDashboardExit(
+        role: 'citizen',
+        screen: 'sos',
+        sosId: _lastRequest?.id,
+      );
+      // SOSScreen is opened via pushReplacement from SessionBootstrapScreen.
+      // Using pop() can leave the navigator with no routes (white screen).
+      if (context.mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(builder: (_) => const RoleSelectionScreen()),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _confirmBackToMain(context);
+      },
+      child: Stack(
+        children: [
+          Builder(
+            builder: (context) {
+              if (_lastRequest != null && _dispatchInfo != null) {
+                return _buildTrackingView();
+              }
+              if (_lastRequest != null) {
+                return _buildWaitingView();
+              }
+              return _buildSOSView();
+            },
+          ),
+          if (_citizenMapFullScreen) _buildCitizenFullScreenMapOverlay(),
+          if (_showRescueCompleteOverlay) _buildRescueCompleteOverlay(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRescueCompleteOverlay() {
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.35),
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0.92, end: 1.0),
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          builder: (context, scale, child) => Transform.scale(
+            scale: scale,
+            child: Opacity(
+              opacity: scale.clamp(0, 1),
+              child: child,
+            ),
+          ),
+          child: Container(
+            width: 320,
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 26,
+                  backgroundColor: Color(0xFFE8F5E9),
+                  child: Icon(
+                    Icons.check_circle,
+                    color: Color(0xFF2E7D32),
+                    size: 34,
+                  ),
+                ),
+                SizedBox(height: 14),
+                Text(
+                  'Rescue completed',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF1B3A5C),
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    height: 1.1,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Thank you',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF607D8B),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCitizenFullScreenMapOverlay() {
+    return Material(
+      color: const Color(0xFF0D1B2A),
+      child: Stack(
+        children: [
+          Consumer<RescueProvider>(
+            builder: (context, provider, _) {
+              if (_lastRequest != null && _dispatchInfo != null) {
+                return _buildTrackingMapContent(provider);
+              }
+              if (_lastRequest != null) {
+                return _buildWaitingMapContent(provider);
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton.filled(
+                      icon: const Icon(Icons.layers),
+                      onPressed: () => showMapLayersSheet(context),
+                      tooltip: 'Map type & details',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      icon: const Icon(Icons.fullscreen_exit),
+                      onPressed: () =>
+                          setState(() => _citizenMapFullScreen = false),
+                      tooltip: 'Shrink map',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 20,
+            right: 16,
+            child: IconButton.filled(
+              icon: const Icon(Icons.my_location),
+              tooltip: 'Recenter',
+              onPressed: () {
+                setState(() {
+                  _trackingMapUserInteracted = false;
+                  _trackingMapAutoFitDone = false;
+                });
+                _fitBothMarkers();
+              },
+              style: IconButton.styleFrom(backgroundColor: Colors.black54),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWaitingMapContent(RescueProvider provider) {
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: provider.currentPosition ??
+            const LatLng(14.6544, 120.9840),
+        initialZoom: 15,
+        interactionOptions: kRescueMapInteractions,
+        keepAlive: true,
+      ),
+      children: [
+        const RescueMapTileLayer(),
+        if (provider.currentPosition != null)
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: provider.currentPosition!,
+                width: 48,
+                height: 48,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.blue,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 3),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.blue.withValues(alpha: 0.5),
+                        blurRadius: 12,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.person,
+                      color: Colors.white, size: 22),
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTrackingMapContent(RescueProvider provider) {
+    final unitType = _dispatchInfo?['unitType'] ?? 'rescue';
+    final unitIcon = switch (unitType) {
+      'ambulance' => Icons.local_hospital,
+      'fireTruck' => Icons.local_fire_department,
+      'policeUnit' => Icons.local_police,
+      _ => Icons.health_and_safety,
+    };
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: provider.currentPosition ?? _lastRequest!.location,
+        initialZoom: 14,
+        interactionOptions: kRescueMapInteractions,
+        keepAlive: true,
+        onPositionChanged: (camera, hasGesture) {
+          if (hasGesture && !_trackingMapUserInteracted) {
+            setState(() => _trackingMapUserInteracted = true);
+          }
+        },
+      ),
+      children: [
+        const RescueMapTileLayer(),
+        if (_routeToMe.length >= 2)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _routeToMe,
+                color: Colors.blue,
+                strokeWidth: 5,
+              ),
+            ],
+          ),
+        MarkerLayer(
+          markers: [
+            if (provider.currentPosition != null)
+              Marker(
+                point: provider.currentPosition!,
+                width: 48,
+                height: 48,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.blue,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 3),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.blue.withValues(alpha: 0.5),
+                        blurRadius: 12,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.person,
+                      color: Colors.white, size: 22),
+                ),
+              ),
+            if (_responderPosition != null)
+              Marker(
+                point: _responderPosition!,
+                width: 56,
+                height: 56,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 3),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.green.withValues(alpha: 0.6),
+                        blurRadius: 14,
+                        spreadRadius: 3,
+                      ),
+                    ],
+                  ),
+                  child: Icon(unitIcon, color: Colors.white, size: 26),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ── SOS Button View ──
+
+  Widget _buildSOSView() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F5F5),
+      appBar: AppBar(
+        title: const Text('Caloocan Rescue'),
+        backgroundColor: const Color(0xFF1B3A5C),
+        foregroundColor: Colors.white,
+        centerTitle: true,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.account_circle),
+            tooltip: 'Account Center',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const AccountCenterScreen(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: Consumer<RescueProvider>(
+        builder: (context, provider, _) {
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: MediaQuery.of(context).size.height -
+                    (MediaQuery.of(context).padding.top + kToolbarHeight),
+              ),
+              child: Column(
+                children: [
+                  _buildLocationBanner(provider),
+                  _buildLocationCard(provider.currentPosition),
+                  _buildUserMapSection(provider.currentPosition),
+                  _buildSOSTypeSection(),
+                  _buildAvailableRescuers(provider),
+                  const SizedBox(height: 24),
+                  _buildSOSButton(),
+                  const SizedBox(height: 24),
+                  _buildBottomInfo(),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLocationBanner(RescueProvider provider) {
+    final status = provider.locationStatus;
+    if (status == null || !status.needsPrompt) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade700,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.orange.withValues(alpha: 0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.location_off, color: Colors.white, size: 28),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Turn on Location',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Keep location on so rescuers can find you accurately.',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.95),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              final opened = await provider.locationService.openLocationSettings();
+              if (!opened) await provider.locationService.openAppSettings();
+              if (mounted) provider.refreshLocationStatus();
+            },
+            child: const Text('Turn on', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationCard(LatLng? position) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(
+            position != null ? Icons.location_on : Icons.location_searching,
+            color: position != null ? Colors.green : Colors.orange,
+            size: 28,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  position != null
+                      ? 'Location Acquired'
+                      : 'Acquiring Location...',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                if (position != null)
+                  Text(
+                    '${position.latitude.toStringAsFixed(5)}, '
+                    '${position.longitude.toStringAsFixed(5)}',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUserMapSection(LatLng? position) {
+    if (!_userMapVisible) {
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: position == null
+              ? null
+              : () => setState(() {
+                    _userMapVisible = true;
+                    _userMapExpanded = true;
+                  }),
+          icon: const Icon(Icons.map),
+          label: Text(
+            position == null
+                ? 'Waiting for your GPS location...'
+                : 'Show your location on map',
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => setState(() => _userMapExpanded = !_userMapExpanded),
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.map,
+                    color: const Color(0xFF1B3A5C),
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Your location on map',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        color: Color(0xFF1B3A5C),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Color(0xFF1B3A5C)),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () {
+                      setState(() {
+                        _userMapVisible = false;
+                        _userMapExpanded = false;
+                      });
+                    },
+                  ),
+                  Icon(
+                    _userMapExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: const Color(0xFF1B3A5C),
+                    size: 28,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_userMapExpanded) ...[
+            const Divider(height: 1),
+            SizedBox(
+              height: 280,
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                    child: FlutterMap(
+                      mapController: _userMapController,
+                      options: MapOptions(
+                        initialCenter: position ?? const LatLng(14.6544, 120.9840),
+                        initialZoom: 15,
+                        interactionOptions: kRescueMapInteractions,
+                        keepAlive: true,
+                        onMapReady: () {
+                          if (position != null) {
+                            _userMapController.move(position, 16);
+                          }
+                        },
+                      ),
+                      children: [
+                        const RescueMapTileLayer(),
+                        if (position != null)
+                          MarkerLayer(
+                            markers: [
+                              Marker(
+                                point: position,
+                                width: 48,
+                                height: 48,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white, width: 3),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.blue.withValues(alpha: 0.5),
+                                        blurRadius: 10,
+                                        spreadRadius: 2,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Icon(Icons.person, color: Colors.white, size: 24),
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (position != null)
+                    Positioned(
+                      right: 8,
+                      bottom: 8,
+                      child: IconButton(
+                        icon: const Icon(Icons.my_location, color: Color(0xFF1B3A5C)),
+                        onPressed: () => _userMapController.move(position, 16),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSOSTypeSection() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.category, color: const Color(0xFF1B3A5C), size: 22),
+              const SizedBox(width: 8),
+              const Text(
+                'What type of emergency?',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Color(0xFF1B3A5C),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Select the type that best describes your situation. Rescuers will see this before they accept.',
+            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _detailsController,
+            maxLines: 2,
+            style: TextStyle(color: Colors.black87, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: 'Additional details (optional)',
+              hintStyle: TextStyle(color: Colors.grey[500], fontSize: 13),
+              filled: true,
+              fillColor: Colors.grey.shade100,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+          if (_selectedSosType == SOSType.medical) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF5FF),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Preferred destination hospital (optional)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1B3A5C),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _preferredMedicalFacility?.name ??
+                        'Not selected. Responder can still choose nearest.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _preferredMedicalFacility == null
+                          ? Colors.grey[700]
+                          : const Color(0xFF1B3A5C),
+                      fontWeight: _preferredMedicalFacility == null
+                          ? FontWeight.w500
+                          : FontWeight.w700,
+                    ),
+                  ),
+                  if (_preferredMedicalFacility != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        '${_facilityOpenLabel(_preferredMedicalFacility!)}${_preferredMedicalFacility!.phone != null ? ' • ${_preferredMedicalFacility!.phone}' : ''}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.blueGrey[700],
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _openPreferredFacilitySheet,
+                        icon: const Icon(Icons.search, size: 16),
+                        label: const Text('Choose'),
+                      ),
+                      const SizedBox(width: 8),
+                      if (_preferredMedicalFacility != null)
+                        TextButton.icon(
+                          onPressed: () =>
+                              setState(() => _preferredMedicalFacility = null),
+                          icon: const Icon(Icons.clear, size: 16),
+                          label: const Text('Clear'),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          ...SOSType.values.map((type) {
+            final info = SOSTypeInfo.forType(type);
+            final isSelected = _selectedSosType == type;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Material(
+                color: isSelected
+                    ? const Color(0xFF1B3A5C).withValues(alpha: 0.12)
+                    : Colors.grey.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  onTap: () => setState(() => _selectedSosType = type),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _iconForSOSType(type),
+                          size: 24,
+                          color: isSelected
+                              ? const Color(0xFF1B3A5C)
+                              : Colors.grey[600],
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                info.label,
+                                style: TextStyle(
+                                  fontWeight:
+                                      isSelected ? FontWeight.bold : FontWeight.w600,
+                                  fontSize: 14,
+                                  color: isSelected
+                                      ? const Color(0xFF1B3A5C)
+                                      : Colors.black87,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                info.description,
+                                style: TextStyle(
+                                  color: Colors.grey[600],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isSelected)
+                          const Icon(
+                            Icons.check_circle,
+                            color: Color(0xFF1B3A5C),
+                            size: 22,
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAvailableRescuers(RescueProvider provider) {
+    final units = provider.unitsForDisplay
+        .where((u) => provider.isUnitOnline(u.id) && u.isAvailable)
+        .toList();
+
+    if (units.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Text(
+          'No rescue units are currently available.\nYour SOS will be queued as soon as a unit comes online.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.grey[600], fontSize: 12),
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.local_shipping, color: const Color(0xFF1B3A5C), size: 22),
+              const SizedBox(width: 8),
+              const Text(
+                'Available rescue units nearby',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Color(0xFF1B3A5C),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...units.map((u) => ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  switch (u.type) {
+                    UnitType.ambulance => Icons.local_hospital,
+                    UnitType.fireTruck => Icons.local_fire_department,
+                    UnitType.policeUnit => Icons.local_police,
+                    UnitType.rescue => Icons.health_and_safety,
+                  },
+                  color: Colors.green,
+                ),
+                title: Text(
+                  u.callSign,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'AVAILABLE',
+                  style: TextStyle(color: Colors.green, fontSize: 12),
+                ),
+              )),
+        ],
+      ),
+    );
+  }
+
+  IconData _iconForSOSType(SOSType type) {
+    return switch (type) {
+      SOSType.medical => Icons.local_hospital,
+      SOSType.fire => Icons.local_fire_department,
+      SOSType.accident => Icons.car_crash,
+      SOSType.flood => Icons.water_drop,
+      SOSType.violence => Icons.shield,
+      SOSType.other => Icons.help_outline,
+    };
+  }
+
+  String _unitTypeLabelForCitizen(String raw) {
+    return switch (raw) {
+      'ambulance' => 'AMBULANCE',
+      'fireTruck' => 'FIRE TRUCK',
+      'policeUnit' => 'POLICE',
+      'rescue' => 'BARANGAY TANOD',
+      _ => raw.toUpperCase(),
+    };
+  }
+
+  Widget _buildSOSButton() {
+    return Center(
+      child: AnimatedBuilder(
+        animation: _pulseAnimation,
+        builder: (context, child) {
+          return Transform.scale(
+            scale: _pulseAnimation.value,
+            child: child,
+          );
+        },
+        child: GestureDetector(
+          onTap: _sendSOS,
+          child: Container(
+            width: 200,
+            height: 200,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [Colors.red.shade400, Colors.red.shade800],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.red.withValues(alpha: 0.4),
+                  blurRadius: 30,
+                  spreadRadius: 5,
+                ),
+              ],
+            ),
+            child: Center(
+              child: _sending
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.sos, color: Colors.white, size: 48),
+                        SizedBox(height: 8),
+                        Text(
+                          'SOS',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 32,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 4,
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomInfo() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Text(
+        'Tap the SOS button in an emergency.\n'
+        'Your location will be sent to Caloocan Rescue Command.',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: Colors.grey[500], fontSize: 13),
+      ),
+    );
+  }
+
+  // ── Waiting View ──
+
+  Widget _buildWaitingView() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D1B2A),
+      body: Consumer<RescueProvider>(
+        builder: (context, provider, _) {
+          return Stack(
+            children: [
+              FlutterMap(
+                mapController: _mapController,
+                options: MapOptions(
+                  initialCenter: provider.currentPosition ??
+                      const LatLng(14.6544, 120.9840),
+                  initialZoom: 15,
+                  interactionOptions: kRescueMapInteractions,
+                  keepAlive: true,
+                ),
+                children: [
+                  const RescueMapTileLayer(),
+                  if (provider.currentPosition != null)
+                    MarkerLayer(
+                      markers: [
+                        Marker(
+                          point: provider.currentPosition!,
+                          width: 48,
+                          height: 48,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.blue,
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white, width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.blue.withValues(alpha: 0.5),
+                                  blurRadius: 12,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.person,
+                                color: Colors.white, size: 22),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 8,
+                right: 16,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton.filled(
+                      icon: const Icon(Icons.layers),
+                      onPressed: () => showMapLayersSheet(context),
+                      tooltip: 'Map type & details',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      icon: const Icon(Icons.fullscreen),
+                      onPressed: () =>
+                          setState(() => _citizenMapFullScreen = true),
+                      tooltip: 'Expand map',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.transparent,
+                        const Color(0xFF0D1B2A).withValues(alpha: 0.95),
+                        const Color(0xFF0D1B2A),
+                      ],
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(color: Colors.orange),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'SOS Sent — Waiting for Responder',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Request #${_lastRequest!.id.substring(_lastRequest!.id.length - 6)}',
+                        style:
+                            TextStyle(color: Colors.grey[400], fontSize: 14),
+                      ),
+                      const SizedBox(height: 16),
+                      if (_dispatchInfo == null)
+                        SizedBox(
+                          width: double.infinity,
+                          child: TextButton.icon(
+                            onPressed: () => _showCancelSOSDialog(),
+                            icon: const Icon(Icons.cancel, color: Colors.white70),
+                            label: const Text(
+                              'Cancel SOS',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            style: TextButton.styleFrom(
+                              backgroundColor: Colors.white12,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ── Live Tracking View ──
+
+  Widget _buildTrackingView() {
+    final unitCallSign = _dispatchInfo?['unitCallSign'] ?? 'Unknown';
+    final unitType = _dispatchInfo?['unitType'] ?? 'rescue';
+    final dispatchPhase = _dispatchInfo?['phase'] as String?;
+    final nextInstruction = _dispatchInfo?['nextInstruction'] as String?;
+    final destinationName = _dispatchInfo?['destinationName'] as String?;
+    final progressEta = _dispatchInfo?['etaMinutes'] as num?;
+    final progressDistanceM = _dispatchInfo?['distanceMeters'] as num?;
+    final hasDispatchProgress =
+        dispatchPhase != null || progressEta != null || progressDistanceM != null;
+    final routingToFacility =
+        ((_dispatchInfo?['routingTo'] as String?)?.toLowerCase().trim() == 'facility');
+    LatLng? facilityDestinationMarker;
+    final dLat = _dispatchInfo?['destinationLat'];
+    final dLng = _dispatchInfo?['destinationLng'];
+    if (routingToFacility && dLat is num && dLng is num) {
+      facilityDestinationMarker = LatLng(dLat.toDouble(), dLng.toDouble());
+    } else if (routingToFacility) {
+      facilityDestinationMarker = _lastFacilityRoutingDestination;
+    }
+
+    final IconData unitIcon = switch (unitType) {
+      'ambulance' => Icons.local_hospital,
+      'fireTruck' => Icons.local_fire_department,
+      'policeUnit' => Icons.local_police,
+      _ => Icons.health_and_safety,
+    };
+
+    String distText = '';
+    String etaText = '';
+    final bool responderArrivedWithin30m;
+    if (_responderPosition != null) {
+      final citizenPos = context.read<RescueProvider>().currentPosition;
+      if (citizenPos != null) {
+        final distM =
+            (GeoUtils.haversineKm(_responderPosition!, citizenPos) * 1000);
+        responderArrivedWithin30m = !routingToFacility && distM <= 30;
+        if (_routeDistanceKm > 0) {
+          distText = _routeDistanceKm < 1
+              ? '${(_routeDistanceKm * 1000).toStringAsFixed(0)}m'
+              : '${_routeDistanceKm.toStringAsFixed(1)} km';
+          etaText = _routeEtaMinutes < 1
+              ? 'Less than 1 min'
+              : '${_routeEtaMinutes.toStringAsFixed(0)} min';
+        } else {
+          final km = GeoUtils.haversineKm(_responderPosition!, citizenPos);
+          distText = km < 1
+              ? '${(km * 1000).toStringAsFixed(0)}m'
+              : '${km.toStringAsFixed(1)} km';
+          etaText = '~${(km / 0.5).toStringAsFixed(0)} min';
+        }
+      } else {
+        responderArrivedWithin30m = false;
+      }
+    } else {
+      responderArrivedWithin30m = false;
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D1B2A),
+      body: Stack(
+        children: [
+          Consumer<RescueProvider>(
+            builder: (context, provider, _) {
+              return FlutterMap(
+                mapController: _mapController,
+                options: MapOptions(
+                  initialCenter:
+                      provider.currentPosition ?? _lastRequest!.location,
+                  initialZoom: 14,
+                  interactionOptions: kRescueMapInteractions,
+                  keepAlive: true,
+                  onPositionChanged: (camera, hasGesture) {
+                    if (hasGesture && !_trackingMapUserInteracted) {
+                      setState(() => _trackingMapUserInteracted = true);
+                    }
+                  },
+                ),
+                children: [
+                  const RescueMapTileLayer(),
+
+                  if (_routeToMe.length >= 2)
+                    PolylineLayer(
+                      polylines: [
+                        Polyline(
+                          points: _routeToMe,
+                          color: Colors.blue,
+                          strokeWidth: 5,
+                        ),
+                      ],
+                    ),
+
+                  MarkerLayer(
+                    markers: [
+                      if (provider.currentPosition != null)
+                        Marker(
+                          point: provider.currentPosition!,
+                          width: 48,
+                          height: 48,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.blue,
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white, width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.blue.withValues(alpha: 0.5),
+                                  blurRadius: 12,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.person,
+                                color: Colors.white, size: 22),
+                          ),
+                        ),
+
+                      if (_responderPosition != null)
+                        Marker(
+                          point: _responderPosition!,
+                          width: 56,
+                          height: 56,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.green,
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white, width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.green.withValues(alpha: 0.6),
+                                  blurRadius: 14,
+                                  spreadRadius: 3,
+                                ),
+                              ],
+                            ),
+                            child:
+                                Icon(unitIcon, color: Colors.white, size: 26),
+                          ),
+                        ),
+                      if (facilityDestinationMarker != null)
+                        Marker(
+                          point: facilityDestinationMarker,
+                          width: 46,
+                          height: 46,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade700,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 3),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.red.withValues(alpha: 0.5),
+                                  blurRadius: 12,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.local_hospital,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+
+          // Top info card
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 8,
+            left: 12,
+            // Keep clear space for the right control stack to avoid overlap.
+            right: 92,
+            child: Card(
+              elevation: 6,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20)),
+              color: const Color(0xFF1B3A5C).withValues(alpha: 0.95),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withValues(alpha: 0.3),
+                            shape: BoxShape.circle,
+                          ),
+                          child:
+                              Icon(unitIcon, color: Colors.green, size: 28),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Help is on the way!',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '$unitCallSign  •  ${_unitTypeLabelForCitizen(unitType.toString())}',
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (dispatchPhase != null || nextInstruction != null) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (dispatchPhase != null)
+                              Text(
+                                'Status: $dispatchPhase',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            if (destinationName != null && destinationName.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  'Destination: $destinationName',
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 12),
+                                ),
+                              ),
+                            if (nextInstruction != null && nextInstruction.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  nextInstruction,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            if (progressDistanceM != null || progressEta != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  '${progressDistanceM != null ? '${progressDistanceM.round()} m' : ''}${progressDistanceM != null && progressEta != null ? ' • ' : ''}${progressEta != null ? '${progressEta.round()} min' : ''}',
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 12),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (_responderPosition != null &&
+                        distText.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  const Text('DISTANCE',
+                                      style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600)),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    distText,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              width: 1,
+                              height: 36,
+                              color: Colors.white24,
+                            ),
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  const Text('ETA',
+                                      style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600)),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    etaText,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (responderArrivedWithin30m) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.35)),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.flag, color: Colors.lightGreenAccent, size: 18),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Responder has arrived.',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (_responderPosition == null && !hasDispatchProgress) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.orange,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Locating responder...',
+                            style: TextStyle(
+                                color: Colors.grey[400], fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Cancel SOS (tracking): allowed while SOS active — extra confirmations after dispatch
+          if (_lastRequest != null)
+            Positioned(
+              bottom: 24,
+              left: 16,
+              child: TextButton.icon(
+                onPressed: () => _showCancelSOSDialog(),
+                icon: Icon(
+                  Icons.cancel,
+                  color: _dispatchInfo != null ? Colors.orange.shade200 : Colors.white70,
+                  size: 20,
+                ),
+                label: Text(
+                  'Cancel SOS',
+                  style: TextStyle(
+                    color: _dispatchInfo != null
+                        ? Colors.orange.shade100
+                        : Colors.white70,
+                  ),
+                ),
+                style: TextButton.styleFrom(
+                  backgroundColor: const Color(0xFF1B3A5C).withValues(alpha: 0.9),
+                ),
+              ),
+            ),
+
+          // Message & map FABs
+          Positioned(
+            bottom: 24,
+            right: 16,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton.filled(
+                  icon: const Icon(Icons.layers),
+                  onPressed: () => showMapLayersSheet(context),
+                  tooltip: 'Map type & details',
+                  style: IconButton.styleFrom(
+                    backgroundColor:
+                        const Color(0xFF1B3A5C).withValues(alpha: 0.95),
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                IconButton.filled(
+                  icon: const Icon(Icons.fullscreen),
+                  onPressed: () =>
+                      setState(() => _citizenMapFullScreen = true),
+                  tooltip: 'Expand map',
+                  style: IconButton.styleFrom(
+                    backgroundColor:
+                        const Color(0xFF1B3A5C).withValues(alpha: 0.95),
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ChatFabWithBadge(
+                  sosId: _lastRequest!.id,
+                  myRole: 'citizen',
+                  suppressNotifications: _chatSheetOpen,
+                  onPressed: () {
+                    final provider = context.read<RescueProvider>();
+                    setState(() => _chatSheetOpen = true);
+                    showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      backgroundColor: const Color(0xFF1B2838),
+                      shape: const RoundedRectangleBorder(
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                      ),
+                      builder: (_) => DraggableScrollableSheet(
+                        initialChildSize: 0.6,
+                        minChildSize: 0.3,
+                        maxChildSize: 0.95,
+                        expand: false,
+                        builder: (_, scrollController) => Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Text(
+                                'Message rescuer',
+                                style: TextStyle(
+                                  color: Colors.grey[300],
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: SOSChatPanel(
+                                sosId: _lastRequest!.id,
+                                senderRole: 'citizen',
+                                senderId: provider.citizenId ?? 'citizen',
+                                senderDisplayName:
+                                    provider.citizenName ?? 'Citizen',
+                                completedAt: null,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ).whenComplete(() {
+                      if (mounted) setState(() => _chatSheetOpen = false);
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                FloatingActionButton.small(
+                  heroTag: 'fit-bounds',
+                  onPressed: _fitBothMarkers,
+                  backgroundColor:
+                      const Color(0xFF1B3A5C).withValues(alpha: 0.95),
+                  child: const Icon(Icons.zoom_out_map, color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                FloatingActionButton.small(
+                  heroTag: 'recenter-citizen',
+                  onPressed: () {
+                    final pos =
+                        context.read<RescueProvider>().currentPosition;
+                    if (pos != null) _mapController.move(pos, 16);
+                  },
+                  backgroundColor:
+                      const Color(0xFF1B3A5C).withValues(alpha: 0.95),
+                  child:
+                      const Icon(Icons.my_location, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

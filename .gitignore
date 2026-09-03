@@ -1,0 +1,46 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*.swp
+
+# Flutter / Dart (safety net across all three apps)
+**/build/
+**/.dart_tool/
+**/.pub-cache/
+**/.pub/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/coverage/
+**/.build/
+**/.buildlog/
+
+# Windows Flutter ephemeral
+**/windows/flutter/ephemeral/
+
+# Android / Gradle
+**/.gradle/
+**/.cxx/
+**/local.properties
+**/captures/
+key.properties
+**/*.keystore
+**/*.jks
+
+# Build outputs
+*.apk
+*.aab
+*.ipa
+*.exe
+app.*.symbols
+app.*.map.json
+
+# Logs
+*.log

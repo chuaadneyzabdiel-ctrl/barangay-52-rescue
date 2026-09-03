@@ -1,0 +1,11 @@
+rules_version = '2';
+// Deploy: Firebase Console → Storage → Rules
+// SOS chat images: tighten with Firebase Auth in production.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /sos_chats/{sosId}/images/{allPaths=**} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

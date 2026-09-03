@@ -1,0 +1,11 @@
+{
+  "rules": {
+    "unit_locations": { ".read": true, ".write": true },
+    "active_sos": { ".read": true, ".write": true },
+    "sos_history": { ".read": true, ".write": true },
+    "dispatch": { ".read": true, ".write": true },
+    "hazard_zones": { ".read": true, ".write": true },
+    "sos_chats": { ".read": true, ".write": true },
+    "audit_log": { ".read": true, ".write": true }
+  }
+}

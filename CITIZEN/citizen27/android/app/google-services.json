@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "727417603023",
+    "firebase_url": "https://rescue-app-c79cf-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "rescue-app-c79cf",
+    "storage_bucket": "rescue-app-c79cf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:727417603023:android:bf884e4293525acc6508ba",
+        "android_client_info": {
+          "package_name": "com.caloocan.rescue.rescue_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDCkpb0dANXiQA8Fl84DKzcJLfLvjuJoKE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
