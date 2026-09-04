@@ -6,9 +6,12 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../map/barangay_coverage.dart';
 import '../../map/rescue_map_tiles.dart';
 import '../../widgets/map_layers_sheet.dart';
 import '../../widgets/rescue_map_tile_layer.dart';
+import '../../widgets/sos_scene_photo.dart';
 import '../../models/rescue_models.dart';
 import '../../providers/rescue_provider.dart';
 import '../../utils/geo_utils.dart';
@@ -724,6 +727,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
                 ),
                 children: [
                   const RescueMapTileLayer(),
+                  ...BarangayCoverage.mapLayers(),
                   PolygonLayer(
                     polygons: provider.hazardZones
                         .where((h) => h.isActive)
@@ -1394,6 +1398,78 @@ class _DispatchCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (request.locationIsPinned) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.push_pin, color: Colors.orangeAccent, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      request.isProxyReport
+                          ? 'Pinned location for ${request.reportedForName}'
+                          : 'Pinned incident location (not live GPS)',
+                      style: const TextStyle(
+                        color: Colors.orangeAccent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (!BarangayCoverage.contains(request.location)) ...[
+              const SizedBox(height: 8),
+              const Row(
+                children: [
+                  Icon(Icons.warning_amber, color: Colors.orangeAccent, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Outside Barangay 52 coverage',
+                      style: TextStyle(
+                        color: Colors.orangeAccent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (request.hasCallbackPhone) ...[
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () async {
+                  final uri = Uri(
+                    scheme: 'tel',
+                    path: request.callbackPhone!.trim(),
+                  );
+                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                },
+                child: Row(
+                  children: [
+                    const Icon(Icons.call, color: Colors.lightGreenAccent, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        request.callbackPhone!.trim(),
+                        style: const TextStyle(
+                          color: Colors.lightGreenAccent,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          decoration: TextDecoration.underline,
+                          decorationColor: Colors.lightGreenAccent,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (request.hasScenePhoto)
+              SosScenePhotoThumb(photoUrl: request.scenePhotoUrl),
             if (request.message != null) ...[
               const SizedBox(height: 6),
               Row(

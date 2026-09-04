@@ -1,4 +1,6 @@
+import 'package:latlong2/latlong.dart';
 import '../models/map_layer_models.dart';
+import 'geo_utils.dart';
 
 /// Shared facility search helpers used by both citizen and responder UIs.
 class FacilitySearchUtils {
@@ -32,6 +34,37 @@ class FacilitySearchUtils {
         typeNorm.contains(qNorm) ||
         cityNorm.contains(qNorm) ||
         addressNorm.contains(qNorm);
+  }
+
+  static MapLayerPOI? nearestTo(LatLng origin, List<MapLayerPOI> facilities) {
+    if (facilities.isEmpty) return null;
+    MapLayerPOI? best;
+    var bestKm = double.infinity;
+    for (final p in facilities) {
+      final km = GeoUtils.haversineKm(origin, p.position);
+      if (km < bestKm) {
+        bestKm = km;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  static List<MapLayerPOI> sortedByDistance(
+    LatLng origin,
+    Iterable<MapLayerPOI> facilities,
+  ) {
+    final rows = List<MapLayerPOI>.from(facilities);
+    rows.sort(
+      (a, b) => GeoUtils.haversineKm(origin, a.position)
+          .compareTo(GeoUtils.haversineKm(origin, b.position)),
+    );
+    return rows;
+  }
+
+  static String formatDistanceKm(double km) {
+    if (km < 1) return '${(km * 1000).round()} m';
+    return '${km.toStringAsFixed(1)} km';
   }
 }
 

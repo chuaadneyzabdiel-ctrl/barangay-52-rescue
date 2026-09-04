@@ -6,10 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../models/map_layer_models.dart';
 import '../../models/rescue_models.dart';
+import '../../map/barangay_coverage.dart';
 import '../../map/rescue_map_tiles.dart';
 import '../../providers/rescue_provider.dart';
 import '../../utils/unit_sos_compatibility.dart';
@@ -19,6 +20,7 @@ import '../../widgets/rescue_map_tile_layer.dart';
 import '../../services/map_layer_data_service.dart';
 import '../../services/reverse_geocoding_service.dart';
 import '../../widgets/sos_chat_panel.dart';
+import '../../widgets/sos_scene_photo.dart';
 import '../../widgets/lgu_responder_chat_panel.dart';
 import 'account_center_screen.dart';
 
@@ -43,7 +45,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
   int _mapFlex = 3;
   bool _mapFullScreen = false;
 
-  static const _caloocanCenter = LatLng(14.6990, 121.0200);
+  static const _caloocanCenter = BarangayCoverage.center;
 
   final FlutterTts _tts = FlutterTts();
   late final AnimationController _pulse;
@@ -583,12 +585,13 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       mapController: _mapController,
       options: MapOptions(
         initialCenter: _caloocanCenter,
-        initialZoom: 13,
+        initialZoom: 15,
         interactionOptions: kRescueMapInteractions,
         keepAlive: true,
       ),
       children: [
         const RescueMapTileLayer(),
+        ...BarangayCoverage.mapLayers(),
         ...MapLayerType.values
             .where((type) => type != MapLayerType.hazardZones)
             .expand((type) {
@@ -1505,6 +1508,11 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     );
   }
 
+  Future<void> _launchCitizenCall(String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone.trim());
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
   void _showLGUChat(BuildContext context, SOSRequest sos) {
     showModalBottomSheet(
       context: context,
@@ -1539,6 +1547,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 senderDisplayName: 'LGU',
                 completedAt: sos.completedAt,
                 readOnly: true,
+                otherPartyPhoneNumber: sos.callbackPhone,
               ),
             ),
           ],
@@ -1619,7 +1628,8 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
         title: Text(sos.citizenName,
             style: const TextStyle(color: Colors.white, fontSize: 13)),
         subtitle: Text(
-          '${_addressFor(sos)}\n$typeLabel · ${sos.priority.name.toUpperCase()} · ${sos.status.name}',
+          '${_addressFor(sos)}\n$typeLabel · ${sos.priority.name.toUpperCase()} · ${sos.status.name}'
+          '${sos.locationIsPinned ? (sos.isProxyReport ? ' · For ${sos.reportedForName}' : ' · Pinned') : ''}',
           maxLines: 3,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(color: Colors.grey[500], fontSize: 11),
@@ -1886,6 +1896,48 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                   '${SOSTypeInfo.forType(sos.sosType).label} · ${sos.priority.name.toUpperCase()} · ${sos.status.name}',
                   style: TextStyle(color: Colors.grey[400], fontSize: 13),
                 ),
+                if (sos.locationIsPinned) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    sos.isProxyReport
+                        ? 'Pinned for ${sos.reportedForName} · reported by ${sos.citizenName}'
+                        : 'Pinned incident location (not live GPS)',
+                    style: const TextStyle(
+                      color: Colors.orangeAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                if (!BarangayCoverage.contains(sos.location)) ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Outside Barangay 52 coverage',
+                    style: TextStyle(
+                      color: Colors.orangeAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                if (sos.hasCallbackPhone) ...[
+                  const SizedBox(height: 6),
+                  InkWell(
+                    onTap: () => _launchCitizenCall(sos.callbackPhone!.trim()),
+                    child: Text(
+                      'Call: ${sos.callbackPhone!.trim()}',
+                      style: const TextStyle(
+                        color: Colors.lightGreenAccent,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        decoration: TextDecoration.underline,
+                        decorationColor: Colors.lightGreenAccent,
+                      ),
+                    ),
+                  ),
+                ],
+                if (sos.hasScenePhoto)
+                  SosScenePhotoThumb(photoUrl: sos.scenePhotoUrl),
                 const SizedBox(height: 12),
                 Container(
                   width: double.infinity,

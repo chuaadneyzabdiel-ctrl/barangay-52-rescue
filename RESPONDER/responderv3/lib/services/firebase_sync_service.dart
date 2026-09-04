@@ -514,7 +514,11 @@ class FirebaseSyncService {
   }
 
   /// Updates the citizen's live location on an existing SOS.
+  /// Pinned / proxy SOS pins are never moved by reporter GPS.
   Future<void> updateSOSLocation(String sosId, LatLng location) async {
+    final pinned =
+        await _db.ref('active_sos/$sosId/locationIsPinned').get();
+    if (pinned.value == true) return;
     await _db.ref('active_sos/$sosId').update({
       'lat': location.latitude,
       'lng': location.longitude,
@@ -616,6 +620,13 @@ class FirebaseSyncService {
       createdAt: request.createdAt,
       assignedUnitId: request.assignedUnitId,
       completedAt: now,
+      preferredFacilityId: request.preferredFacilityId,
+      preferredFacilityName: request.preferredFacilityName,
+      preferredFacilityLocation: request.preferredFacilityLocation,
+      locationIsPinned: request.locationIsPinned,
+      reportedForName: request.reportedForName,
+      callbackPhone: request.callbackPhone,
+      scenePhotoUrl: request.scenePhotoUrl,
     );
     final json = entry.toJson();
     json['completedAt'] = now.millisecondsSinceEpoch;
@@ -644,6 +655,13 @@ class FirebaseSyncService {
       createdAt: request.createdAt,
       assignedUnitId: request.assignedUnitId,
       completedAt: now,
+      preferredFacilityId: request.preferredFacilityId,
+      preferredFacilityName: request.preferredFacilityName,
+      preferredFacilityLocation: request.preferredFacilityLocation,
+      locationIsPinned: request.locationIsPinned,
+      reportedForName: request.reportedForName,
+      callbackPhone: request.callbackPhone,
+      scenePhotoUrl: request.scenePhotoUrl,
     );
     final json = completed.toJson();
     json['completedAt'] = now.millisecondsSinceEpoch;
