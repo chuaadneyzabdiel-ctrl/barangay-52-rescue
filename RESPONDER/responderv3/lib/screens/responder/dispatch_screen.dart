@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../../map/rescue_map_tiles.dart';
@@ -33,6 +35,14 @@ class _DispatchScreenState extends State<DispatchScreen> {
   bool _isCancelling = false;
   StreamSubscription<bool>? _approvalSub;
   bool _revokedHandled = false;
+
+  RescueProvider? _boundProvider;
+  Timer? _escalateTimer;
+  final FlutterTts _tts = FlutterTts();
+  bool _sosWatchSeeded = false;
+  bool _wasBusy = false;
+  final Set<String> _knownPendingIds = {};
+  final Map<String, DateTime> _alertedAt = {};
 
   Future<void> _handleResponderActionError(Object error) async {
     if (!mounted) return;
@@ -83,6 +93,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
       await provider.refreshLocationStatus();
       provider.startFirebaseListeners();
       provider.initLocation();
+      _bindSosAlarmWatch(provider);
       RescueUnit? unit = provider.currentResponderUnit?.id == widget.unitId
           ? provider.currentResponderUnit
           : provider.rescueUnits.where((u) => u.id == widget.unitId).firstOrNull;
@@ -145,10 +156,6 @@ class _DispatchScreenState extends State<DispatchScreen> {
           );
         }
       });
-      final pending = provider.pendingRequests;
-      if (pending.isNotEmpty) {
-        LocalNotificationService().showNewSOS();
-      }
 
       // Resume navigation if responder had an active run (persisted) — e.g. left map or restarted app.
       await Future<void>.delayed(const Duration(milliseconds: 400));
@@ -230,10 +237,173 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
   @override
   void dispose() {
+    _escalateTimer?.cancel();
+    _boundProvider?.removeListener(_onRescueDataForSosAlarm);
+    unawaited(_tts.stop());
+    unawaited(LocalNotificationService().cancelIncomingSosAlarm());
     context.read<RescueProvider>().stopGpsUpload();
     _approvalSub?.cancel();
     _mapController.dispose();
     super.dispose();
+  }
+
+  void _bindSosAlarmWatch(RescueProvider provider) {
+    if (identical(_boundProvider, provider)) return;
+    _boundProvider?.removeListener(_onRescueDataForSosAlarm);
+    _boundProvider = provider;
+    _boundProvider!.addListener(_onRescueDataForSosAlarm);
+    _escalateTimer?.cancel();
+    _escalateTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _checkSosEscalation();
+    });
+    _onRescueDataForSosAlarm();
+  }
+
+  UnitType? _unitTypeOf(RescueProvider provider) {
+    final live = provider.rescueUnits
+        .where((u) => u.id == widget.unitId)
+        .firstOrNull
+        ?.type;
+    if (live != null) return live;
+    final roster = provider.rescueUnitsRoster
+        .where((u) => u.id == widget.unitId)
+        .firstOrNull
+        ?.type;
+    if (roster != null) return roster;
+    if (provider.currentResponderUnit?.id == widget.unitId) {
+      return provider.currentResponderUnit?.type;
+    }
+    return null;
+  }
+
+  bool _unitIsBusy(RescueProvider provider) {
+    return provider.sosRequests.any(
+      (r) => r.assignedUnitId == widget.unitId && r.isActive,
+    );
+  }
+
+  List<SOSRequest> _compatiblePending(RescueProvider provider) {
+    final pending = provider.pendingRequests;
+    final unitType = _unitTypeOf(provider);
+    if (unitType == null) return pending;
+    return pending.where((r) => canUnitHandleSos(unitType, r.sosType)).toList();
+  }
+
+  SOSRequest? _newestOf(List<SOSRequest> list) {
+    if (list.isEmpty) return null;
+    SOSRequest newest = list.first;
+    for (final s in list.skip(1)) {
+      if (s.createdAt.isAfter(newest.createdAt)) newest = s;
+    }
+    return newest;
+  }
+
+  void _onRescueDataForSosAlarm() {
+    final provider = _boundProvider;
+    if (provider == null || !mounted) return;
+
+    final compatible = _compatiblePending(provider);
+    final ids = compatible.map((s) => s.id).toSet();
+    final busy = _unitIsBusy(provider);
+
+    if (busy) {
+      _wasBusy = true;
+      _sosWatchSeeded = true;
+      _knownPendingIds
+        ..clear()
+        ..addAll(ids);
+      _alertedAt.removeWhere((id, _) => !ids.contains(id));
+      unawaited(_silenceSosAlarm());
+      return;
+    }
+
+    if (_wasBusy && compatible.isNotEmpty) {
+      _wasBusy = false;
+      _knownPendingIds
+        ..clear()
+        ..addAll(ids);
+      final newest = _newestOf(compatible);
+      if (newest != null) unawaited(_triggerSosAlarm(newest, escalate: false));
+      return;
+    }
+    _wasBusy = false;
+
+    if (!_sosWatchSeeded) {
+      _knownPendingIds
+        ..clear()
+        ..addAll(ids);
+      _sosWatchSeeded = true;
+      final newest = _newestOf(compatible);
+      if (newest != null) unawaited(_triggerSosAlarm(newest, escalate: false));
+      return;
+    }
+
+    final newcomers = ids.difference(_knownPendingIds);
+    _knownPendingIds
+      ..clear()
+      ..addAll(ids);
+    _alertedAt.removeWhere((id, _) => !ids.contains(id));
+
+    if (compatible.isEmpty) {
+      unawaited(_silenceSosAlarm());
+      return;
+    }
+
+    if (newcomers.isEmpty) return;
+    final newest = _newestOf(
+      compatible.where((s) => newcomers.contains(s.id)).toList(),
+    );
+    if (newest != null) unawaited(_triggerSosAlarm(newest, escalate: false));
+  }
+
+  void _checkSosEscalation() {
+    final provider = _boundProvider;
+    if (provider == null || !mounted) return;
+    if (_unitIsBusy(provider)) return;
+
+    final compatible = _compatiblePending(provider);
+    if (compatible.isEmpty) return;
+
+    final now = DateTime.now();
+    SOSRequest? due;
+    for (final sos in compatible) {
+      final at = _alertedAt[sos.id];
+      if (at == null) continue;
+      if (now.difference(at) < const Duration(seconds: 30)) continue;
+      due = sos;
+      break;
+    }
+    if (due != null) unawaited(_triggerSosAlarm(due, escalate: true));
+  }
+
+  Future<void> _triggerSosAlarm(SOSRequest sos, {required bool escalate}) async {
+    _alertedAt[sos.id] = DateTime.now();
+    final typeLabel = SOSTypeInfo.forType(sos.sosType).label;
+    try {
+      await SystemSound.play(SystemSoundType.alert);
+    } catch (_) {}
+    try {
+      await LocalNotificationService().showNewSOS(
+        typeLabel: typeLabel,
+        citizenName: sos.citizenName,
+        escalate: escalate,
+      );
+    } catch (_) {}
+    try {
+      await _tts.stop();
+      final spoken = escalate
+          ? 'SOS still waiting. $typeLabel.'
+          : 'New SOS. ${sos.citizenName}. $typeLabel.';
+      await _tts.speak(spoken);
+    } catch (_) {}
+  }
+
+  Future<void> _silenceSosAlarm() async {
+    _alertedAt.clear();
+    try {
+      await _tts.stop();
+    } catch (_) {}
+    await LocalNotificationService().cancelIncomingSosAlarm();
   }
 
   String _statusLabel(UnitStatus status) {
