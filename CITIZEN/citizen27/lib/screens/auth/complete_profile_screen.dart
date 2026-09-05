@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../../models/barangay.dart';
 import '../../providers/rescue_provider.dart';
 import '../../widgets/home_barangay_picker.dart';
 
@@ -151,7 +150,7 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
                   const SizedBox(height: 12),
                   HomeBarangayPicker(
                     value: _barangayId,
-                    catalog: kBuiltInBarangays,
+                    catalog: context.watch<RescueProvider>().barangays,
                     onChanged: (id) => setState(() => _barangayId = id),
                   ),
                   const SizedBox(height: 12),

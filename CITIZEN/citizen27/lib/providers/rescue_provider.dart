@@ -62,6 +62,8 @@ class RescueProvider extends ChangeNotifier {
   StreamSubscription? _hazardSub;
   StreamSubscription? _sosHistorySub;
   StreamSubscription? _usersSub;
+  StreamSubscription? _barangaysSub;
+  List<BarangayRecord> _barangays = List<BarangayRecord>.from(kBuiltInBarangays);
 
   // GPS upload timer for responders
   Timer? _gpsUploadTimer;
@@ -119,6 +121,8 @@ class RescueProvider extends ChangeNotifier {
   bool get isCitizenGuest => _citizenAccessMode == CitizenAccessMode.guest;
   bool get isCitizenRegistered => _citizenAccessMode == CitizenAccessMode.registered;
   List<Map<String, dynamic>> get accountUsers => List.unmodifiable(_accountUsers);
+  List<BarangayRecord> get barangays =>
+      _barangays.isEmpty ? kBuiltInBarangays : List.unmodifiable(_barangays);
 
   RescueProvider({
     AStarRoutingService? routingService,
@@ -185,6 +189,30 @@ class RescueProvider extends ChangeNotifier {
       position: const LatLng(14.7350, 121.0350),
       stationId: 'station-north-2',
       barangayId: kDefaultBarangayId,
+    ),
+    RescueUnit(
+      id: 'unit-53-amb',
+      callSign: 'AMBULANCE-53',
+      type: UnitType.ambulance,
+      position: const LatLng(14.6482, 120.9781),
+      stationId: 'station-53',
+      barangayId: '53',
+    ),
+    RescueUnit(
+      id: 'unit-54-fire',
+      callSign: 'FIRE-54',
+      type: UnitType.fireTruck,
+      position: const LatLng(14.6459, 120.9756),
+      stationId: 'station-54',
+      barangayId: '54',
+    ),
+    RescueUnit(
+      id: 'unit-55-rescue',
+      callSign: 'TANOD-55',
+      type: UnitType.rescue,
+      position: const LatLng(14.6491, 120.9762),
+      stationId: 'station-55',
+      barangayId: '55',
     ),
   ];
 
@@ -414,6 +442,17 @@ class RescueProvider extends ChangeNotifier {
       },
     );
 
+    _barangaysSub = _firebaseSync.watchBarangays().listen(
+      (rows) {
+        _barangays = rows;
+        notifyListeners();
+      },
+      onError: (e, st) {
+        _barangays = List<BarangayRecord>.from(kBuiltInBarangays);
+        notifyListeners();
+      },
+    );
+
     _hazardSub = _firebaseSync.watchAllHazardZones().listen(
       (zones) {
         _hazardZones = zones;
@@ -446,6 +485,7 @@ class RescueProvider extends ChangeNotifier {
     _hazardSub?.cancel();
     _sosHistorySub?.cancel();
     _usersSub?.cancel();
+    _barangaysSub?.cancel();
     _listenersStarted = false;
   }
 

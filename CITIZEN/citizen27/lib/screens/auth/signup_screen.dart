@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/rescue_provider.dart';
 import '../../services/auth_service.dart';
-import '../../models/barangay.dart';
 import '../../widgets/home_barangay_picker.dart';
 
 class SignupScreen extends StatefulWidget {
@@ -187,7 +186,7 @@ class _SignupScreenState extends State<SignupScreen> {
                   const SizedBox(height: 12),
                   HomeBarangayPicker(
                     value: _barangayId,
-                    catalog: kBuiltInBarangays,
+                    catalog: context.watch<RescueProvider>().barangays,
                     onChanged: (id) => setState(() => _barangayId = id),
                   ),
                   const SizedBox(height: 12),
