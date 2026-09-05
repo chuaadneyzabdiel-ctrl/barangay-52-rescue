@@ -1393,7 +1393,9 @@ class _SOSScreenState extends State<SOSScreen>
       ),
       children: [
         const RescueMapTileLayer(),
-        ...BarangayCoverage.mapLayers(),
+        ...BarangayCoverage.mapLayers(
+          barangayId: provider.citizenBarangayId,
+        ),
         MarkerLayer(markers: _citizenIncidentMarkers(provider)),
       ],
     );
@@ -1424,7 +1426,9 @@ class _SOSScreenState extends State<SOSScreen>
       ),
       children: [
         const RescueMapTileLayer(),
-        ...BarangayCoverage.mapLayers(),
+        ...BarangayCoverage.mapLayers(
+          barangayId: provider.citizenBarangayId,
+        ),
         if (_routeToMe.length >= 2)
           PolylineLayer(
             polylines: [
@@ -1497,7 +1501,7 @@ class _SOSScreenState extends State<SOSScreen>
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
-        title: const Text('Barangay 52 Rescue'),
+        title: const Text('Caloocan City Integrated Rescue Operations'),
         backgroundColor: const Color(0xFF1B3A5C),
         foregroundColor: Colors.white,
         centerTitle: true,
@@ -1904,7 +1908,9 @@ class _SOSScreenState extends State<SOSScreen>
                       ),
                       children: [
                         const RescueMapTileLayer(),
-                        ...BarangayCoverage.mapLayers(),
+                        ...BarangayCoverage.mapLayers(
+                          barangayId: provider.citizenBarangayId,
+                        ),
                         MarkerLayer(
                           markers: [
                             if (gps != null)
@@ -2498,7 +2504,7 @@ class _SOSScreenState extends State<SOSScreen>
       padding: const EdgeInsets.all(24),
       child: Text(
         'Tap the SOS button in an emergency.\n'
-        '${_usePinnedLocation ? 'The pinned location will be sent to Barangay 52 Rescue Command.' : 'Your GPS location will be sent to Barangay 52 Rescue Command.'}\n'
+        '${_usePinnedLocation ? 'The pinned location will be sent to Caloocan City Integrated Rescue Operations.' : 'Your GPS location will be sent to Caloocan City Integrated Rescue Operations.'}\n'
         'Phone number and photo are optional.',
         textAlign: TextAlign.center,
         style: TextStyle(color: Colors.grey[500], fontSize: 13),
@@ -2527,7 +2533,9 @@ class _SOSScreenState extends State<SOSScreen>
                 ),
                 children: [
                   const RescueMapTileLayer(),
-                  ...BarangayCoverage.mapLayers(),
+                  ...BarangayCoverage.mapLayers(
+                    barangayId: provider.citizenBarangayId,
+                  ),
                   MarkerLayer(markers: _citizenIncidentMarkers(provider)),
                 ],
               ),
@@ -2733,7 +2741,9 @@ class _SOSScreenState extends State<SOSScreen>
                 ),
                 children: [
                   const RescueMapTileLayer(),
-                  ...BarangayCoverage.mapLayers(),
+                  ...BarangayCoverage.mapLayers(
+                    barangayId: provider.citizenBarangayId,
+                  ),
 
                   if (_routeToMe.length >= 2)
                     PolylineLayer(

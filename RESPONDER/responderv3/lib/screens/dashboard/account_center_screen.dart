@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/response_unit_status.dart';
 import '../../providers/rescue_provider.dart';
 import '../session_bootstrap_screen.dart';
 
@@ -78,19 +79,19 @@ class AccountCenterScreen extends StatelessWidget {
             const Divider(color: Colors.white24, height: 32),
             _lguSectionHeader(
               icon: Icons.local_shipping_outlined,
-              title: 'Responder accounts',
-              subtitle: '${responderRows.length} accounts',
+              title: 'Response Units',
+              subtitle: '${responderRows.length} units',
             ),
             _buildLguUserSection(
               context: context,
               rows: responderRows,
-              emptyText: 'No responder accounts yet.',
+              emptyText: 'No response units yet.',
             ),
             const SizedBox(height: 12),
             const Divider(color: Colors.white24, height: 32),
             _lguSectionHeader(
-              icon: Icons.lock_person_outlined,
-              title: 'Unit login credentials',
+              icon: Icons.local_shipping_outlined,
+              title: 'Responder logins',
               subtitle: '${unitLoginRows.length} accounts',
             ),
             Align(
@@ -98,14 +99,14 @@ class AccountCenterScreen extends StatelessWidget {
               child: FilledButton.tonalIcon(
                 onPressed: () => _promptCreateUnitAccount(context),
                 icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Create unit account'),
+                label: const Text('Create responder account'),
               ),
             ),
             const SizedBox(height: 8),
             _buildLguUnitAccountSection(
               context: context,
               rows: unitLoginRows,
-              emptyText: 'No unit login accounts yet.',
+              emptyText: 'No responder logins yet.',
             ),
             const SizedBox(height: 16),
             _card(
@@ -299,6 +300,7 @@ class AccountCenterScreen extends StatelessWidget {
         'email': raw['email']?.toString(),
         'isGuest': raw['isGuest'] == true,
         'approvedByLgu': raw['approvedByLgu'] == true,
+        'responseUnitStatus': raw['responseUnitStatus']?.toString(),
         'bannedByLgu': raw['bannedByLgu'] == true,
         'banReason': raw['banReason']?.toString(),
         'createdAt': created,
@@ -314,7 +316,8 @@ class AccountCenterScreen extends StatelessWidget {
           'name': unit.callSign,
           'email': null,
           'isGuest': false,
-          'approvedByLgu': true,
+          'approvedByLgu': false,
+          'responseUnitStatus': null,
           'createdAt': DateTime.fromMillisecondsSinceEpoch(0),
           'isNew': false,
         };
@@ -625,225 +628,111 @@ class AccountCenterScreen extends StatelessWidget {
         ),
         children: [
           ...rows.take(80).map((u) {
-
             final name = u['name']?.toString() ?? 'Unknown';
-
             final id = u['id']?.toString() ?? '';
-
             final role = u['role']?.toString() ?? '';
-
             final email = u['email']?.toString();
-
             final isGuest = u['isGuest'] == true;
-
             final isNew = u['isNew'] == true;
-
-            final approved = u['approvedByLgu'] == true;
-
             final isResponder = role == 'responder';
-
+            final unitStatus = responseUnitStatusFromUser(u);
             return Container(
-
               margin: const EdgeInsets.only(bottom: 8),
-
               padding: const EdgeInsets.all(10),
-
               decoration: BoxDecoration(
-
                 color: Colors.white.withValues(alpha: 0.06),
-
                 borderRadius: BorderRadius.circular(10),
-
                 border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-
               ),
-
               child: Column(
-
                 crossAxisAlignment: CrossAxisAlignment.start,
-
                 children: [
-
                   Row(
-
                     children: [
-
                       Expanded(
-
                         child: Text(
-
                           name,
-
                           style: const TextStyle(
-
                             color: Colors.white,
-
                             fontWeight: FontWeight.w700,
-
                             fontSize: 13,
-
                           ),
-
                         ),
-
                       ),
-
                       if (isNew)
-
                         Container(
-
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-
                           decoration: BoxDecoration(
-
                             color: Colors.green.withValues(alpha: 0.25),
-
                             borderRadius: BorderRadius.circular(8),
-
                           ),
-
                           child: const Text(
-
                             'NEW',
-
                             style: TextStyle(color: Colors.greenAccent, fontSize: 10),
-
                           ),
-
                         ),
-
-                    ],
-
-                  ),
-
-                  const SizedBox(height: 3),
-
-                  Text(
-
-                    '$role${isGuest ? ' • guest' : ''}${role == 'responder' ? (approved ? ' • approved' : ' • pending') : ''}',
-
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-
-                  ),
-
-                  if (email != null && email.trim().isNotEmpty)
-
-                    Text(
-
-                      email,
-
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-
-                    ),
-
-                  Text(
-
-                    id,
-
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
-
-                  ),
-
-                  if (isResponder) ...[
-
-                    const SizedBox(height: 8),
-
-                    Row(
-
-                      children: [
-
-                        if (!approved)
-
-                          FilledButton.tonal(
-
-                            onPressed: () async {
-
-                              await context.read<RescueProvider>().setResponderApproval(
-
-                                    responderId: id,
-
-                                    approved: true,
-
-                                  );
-
-                              if (context.mounted) {
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-
-                                  SnackBar(
-
-                                    content: Text('$name approved by LGU.'),
-
-                                    backgroundColor: Colors.green,
-
-                                  ),
-
-                                );
-
-                              }
-
-                            },
-
-                            child: const Text('Approve'),
-
-                          )
-
-                        else
-
-                          OutlinedButton(
-
-                            onPressed: () async {
-
-                              await context.read<RescueProvider>().setResponderApproval(
-
-                                    responderId: id,
-
-                                    approved: false,
-
-                                  );
-
-                              if (context.mounted) {
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-
-                                  SnackBar(
-
-                                    content: Text('$name approval revoked.'),
-
-                                    backgroundColor: Colors.orange,
-
-                                  ),
-
-                                );
-
-                              }
-
-                            },
-
-                            child: const Text('Revoke'),
-
+                      if (isResponder) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: _responseUnitStatusColor(unitStatus).withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(8),
                           ),
-
+                          child: Text(
+                            unitStatus.label.toUpperCase(),
+                            style: TextStyle(
+                              color: _responseUnitStatusColor(unitStatus),
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
                       ],
-
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '$role${isGuest ? ' • guest' : ''}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  if (email != null && email.trim().isNotEmpty)
+                    Text(
+                      email,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
-
+                  Text(
+                    id,
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                  if (isResponder) ...[
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<ResponseUnitStatus>(
+                      value: unitStatus,
+                      dropdownColor: const Color(0xFF1B3A5C),
+                      decoration: const InputDecoration(
+                        labelText: 'Status',
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final s in ResponseUnitStatus.values)
+                          DropdownMenuItem(
+                            value: s,
+                            child: Text(s.label),
+                          ),
+                      ],
+                      onChanged: (next) {
+                        if (next == null) return;
+                        _setResponseUnitStatus(context, id, next, name: name);
+                      },
+                    ),
                   ],
-
                 ],
-
               ),
-
             );
-
           }),
-
         ],
-
       ),
-
     );
-
   }
 
   Widget _buildLguUnitAccountSection({
@@ -889,7 +778,7 @@ class AccountCenterScreen extends StatelessWidget {
         children: rows.take(100).map((row) {
           final loginId = row['loginId']?.toString() ?? row['id']?.toString() ?? '';
           final unitId = row['responderUnitId']?.toString() ?? 'unknown-unit';
-          final status = (row['status']?.toString() ?? 'active').toUpperCase();
+          final loginDisabled = unitLoginIsDisabled(row['status']?.toString());
           final createdBy = row['createdBy']?.toString() ?? 'lgu';
           return Container(
             margin: const EdgeInsets.only(bottom: 8),
@@ -914,23 +803,26 @@ class AccountCenterScreen extends StatelessWidget {
                         ),
                       ),
                     ),
-                    if (status != 'ACTIVE')
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text(
-                          'DISABLED',
-                          style: TextStyle(color: Colors.orangeAccent, fontSize: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: (loginDisabled ? Colors.redAccent : Colors.greenAccent)
+                            .withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        loginDisabled ? 'DISABLED' : 'ENABLED',
+                        style: TextStyle(
+                          color: loginDisabled ? Colors.redAccent : Colors.greenAccent,
+                          fontSize: 10,
                         ),
                       ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  'Unit: $unitId • Status: $status',
+                  'Unit: $unitId',
                   style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
                 Text(
@@ -943,16 +835,16 @@ class AccountCenterScreen extends StatelessWidget {
                   runSpacing: 8,
                   children: [
                     FilledButton.tonal(
+                      onPressed: () => _setUnitLoginEnabled(context, loginId, loginDisabled),
+                      child: Text(loginDisabled ? 'Enable login' : 'Disable login'),
+                    ),
+                    FilledButton.tonal(
                       onPressed: () => _promptEditUnitAccount(context, row),
                       child: const Text('Edit'),
                     ),
                     FilledButton.tonal(
                       onPressed: () => _promptResetUnitPassword(context, loginId),
                       child: const Text('Reset password'),
-                    ),
-                    OutlinedButton(
-                      onPressed: () => _toggleUnitStatus(context, loginId, status == 'ACTIVE'),
-                      child: Text(status == 'ACTIVE' ? 'Disable' : 'Enable'),
                     ),
                     OutlinedButton(
                       onPressed: () => _promptDeleteUnitAccount(context, loginId),
@@ -971,16 +863,16 @@ class AccountCenterScreen extends StatelessWidget {
 
   Future<void> _promptCreateUnitAccount(BuildContext context) async {
     final provider = context.read<RescueProvider>();
+    final assignable = provider.assignableEmergencyUnits;
     final loginIdController = TextEditingController();
     final tempPasswordController = TextEditingController();
-    String? selectedUnitId =
-        provider.rescueUnitsRoster.isNotEmpty ? provider.rescueUnitsRoster.first.id : null;
+    String? selectedUnitId = assignable.isNotEmpty ? assignable.first.id : null;
     try {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setStateDialog) => AlertDialog(
-            title: const Text('Create unit account'),
+            title: const Text('Create responder account'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -992,8 +884,8 @@ class AccountCenterScreen extends StatelessWidget {
                   const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     value: selectedUnitId,
-                    decoration: const InputDecoration(labelText: 'Responder unit'),
-                    items: provider.rescueUnitsRoster
+                    decoration: const InputDecoration(labelText: 'Emergency unit'),
+                    items: assignable
                         .map(
                           (u) => DropdownMenuItem<String>(
                             value: u.id,
@@ -1078,16 +970,50 @@ class AccountCenterScreen extends StatelessWidget {
     }
   }
 
-  Future<void> _toggleUnitStatus(
+  Color _responseUnitStatusColor(ResponseUnitStatus status) {
+    switch (status) {
+      case ResponseUnitStatus.inService:
+        return Colors.greenAccent;
+      case ResponseUnitStatus.outOfService:
+        return Colors.orangeAccent;
+      case ResponseUnitStatus.underMaintenance:
+        return Colors.amberAccent;
+      case ResponseUnitStatus.disabled:
+        return Colors.redAccent;
+    }
+  }
+
+  Future<void> _setResponseUnitStatus(
+    BuildContext context,
+    String responderId,
+    ResponseUnitStatus status, {
+    String? name,
+  }) async {
+    try {
+      await context.read<RescueProvider>().setResponseUnitStatus(
+            responderId: responderId,
+            status: status,
+            name: name,
+          );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceFirst('Bad state: ', ''))),
+        );
+      }
+    }
+  }
+
+  Future<void> _setUnitLoginEnabled(
     BuildContext context,
     String loginId,
-    bool currentlyActive,
+    bool currentlyDisabled,
   ) async {
     try {
       await context.read<RescueProvider>().updateUnitAccountMeta(
             loginId: loginId,
             performedBy: 'lgu-admin',
-            status: currentlyActive ? 'disabled' : 'active',
+            status: currentlyDisabled ? 'active' : 'disabled',
           );
     } catch (e) {
       if (context.mounted) {
@@ -1103,7 +1029,12 @@ class AccountCenterScreen extends StatelessWidget {
     Map<String, dynamic> row,
   ) async {
     final provider = context.read<RescueProvider>();
+    final assignable = provider.assignableEmergencyUnits;
     String? selectedUnitId = row['responderUnitId']?.toString();
+    if (selectedUnitId == null ||
+        !assignable.any((u) => u.id == selectedUnitId)) {
+      selectedUnitId = assignable.isNotEmpty ? assignable.first.id : null;
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -1114,8 +1045,8 @@ class AccountCenterScreen extends StatelessWidget {
             children: [
               DropdownButtonFormField<String>(
                 value: selectedUnitId,
-                decoration: const InputDecoration(labelText: 'Responder unit'),
-                items: provider.rescueUnitsRoster
+                decoration: const InputDecoration(labelText: 'Emergency unit'),
+                items: assignable
                     .map(
                       (u) => DropdownMenuItem<String>(
                         value: u.id,

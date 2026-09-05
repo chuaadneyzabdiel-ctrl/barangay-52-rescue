@@ -225,45 +225,52 @@ class BarangayCoverage {
     return crossings.isOdd;
   }
 
-  static List<Widget> mapLayers() => [
-        PolygonLayer(
-          polygons: [
-            for (final area in allAreas)
-              Polygon(
-                points: area.polygon,
-                color: area.fillColor,
-                borderColor: area.borderColor,
-                borderStrokeWidth: 3,
-              ),
-          ],
-        ),
-        MarkerLayer(
-          markers: [
-            for (final area in allAreas)
-              Marker(
-                point: area.center,
-                width: 108,
-                height: 26,
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: const Color(0xCC1B3A5C),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Center(
-                      child: Text(
-                        area.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                        ),
+  /// When [barangayId] is set, only that barangay outline + label are drawn.
+  /// When null, all barangays 52–56 are shown.
+  static List<Widget> mapLayers({String? barangayId}) {
+    final areas = barangayId == null
+        ? allAreas
+        : [areaFor(barangayId)];
+    return [
+      PolygonLayer(
+        polygons: [
+          for (final area in areas)
+            Polygon(
+              points: area.polygon,
+              color: area.fillColor,
+              borderColor: area.borderColor,
+              borderStrokeWidth: 3,
+            ),
+        ],
+      ),
+      MarkerLayer(
+        markers: [
+          for (final area in areas)
+            Marker(
+              point: area.center,
+              width: 108,
+              height: 26,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xCC1B3A5C),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Center(
+                    child: Text(
+                      area.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
                 ),
               ),
-          ],
-        ),
-      ];
+            ),
+        ],
+      ),
+    ];
+  }
 }

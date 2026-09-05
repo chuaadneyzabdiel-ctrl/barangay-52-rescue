@@ -177,7 +177,97 @@ class RescueUnit {
       barangayId: normalizeBarangayId(json['barangayId']?.toString()),
     );
   }
+
+  factory RescueUnit.fromRosterMap(String id, Map<dynamic, dynamic> json) {
+    final typeName = json['type']?.toString() ?? 'rescue';
+    return RescueUnit(
+      id: id,
+      callSign: (json['callSign']?.toString() ?? id).trim(),
+      type: UnitType.values.firstWhere(
+        (t) => t.name == typeName,
+        orElse: () => UnitType.rescue,
+      ),
+      position: LatLng(
+        (json['lat'] as num?)?.toDouble() ?? 14.6470319,
+        (json['lng'] as num?)?.toDouble() ?? 120.9768745,
+      ),
+      stationId: (json['stationId']?.toString().trim().isNotEmpty == true)
+          ? json['stationId'].toString()
+          : 'station-${normalizeBarangayId(json['barangayId']?.toString())}',
+      barangayId: normalizeBarangayId(json['barangayId']?.toString()),
+    );
+  }
+
+  Map<String, dynamic> toRosterJson() => {
+        'id': id,
+        'callSign': callSign,
+        'type': type.name,
+        'lat': position.latitude,
+        'lng': position.longitude,
+        'stationId': stationId,
+        'barangayId': normalizeBarangayId(barangayId),
+      };
 }
+
+/// Seed catalog for `rescue_unit_roster`. Seed-if-missing only; deletions stay deleted.
+List<RescueUnit> builtInRescueUnits() => [
+      RescueUnit(
+        id: 'unit-1',
+        callSign: 'AMBULANCE-01',
+        type: UnitType.ambulance,
+        position: const LatLng(14.6544, 120.9840),
+        stationId: 'station-south-1',
+        barangayId: kDefaultBarangayId,
+      ),
+      RescueUnit(
+        id: 'unit-2',
+        callSign: 'FIRE-01',
+        type: UnitType.fireTruck,
+        position: const LatLng(14.6475, 120.9780),
+        stationId: 'station-north-1',
+        barangayId: kDefaultBarangayId,
+      ),
+      RescueUnit(
+        id: 'unit-3',
+        callSign: 'TANOD-01',
+        type: UnitType.rescue,
+        position: const LatLng(14.6465, 120.9758),
+        stationId: 'station-north-2',
+        barangayId: kDefaultBarangayId,
+      ),
+      RescueUnit(
+        id: 'unit-53-amb',
+        callSign: 'AMBULANCE-53',
+        type: UnitType.ambulance,
+        position: const LatLng(14.6482, 120.9781),
+        stationId: 'station-53',
+        barangayId: '53',
+      ),
+      RescueUnit(
+        id: 'unit-54-fire',
+        callSign: 'FIRE-54',
+        type: UnitType.fireTruck,
+        position: const LatLng(14.6459, 120.9756),
+        stationId: 'station-54',
+        barangayId: '54',
+      ),
+      RescueUnit(
+        id: 'unit-55-rescue',
+        callSign: 'TANOD-55',
+        type: UnitType.rescue,
+        position: const LatLng(14.6491, 120.9762),
+        stationId: 'station-55',
+        barangayId: '55',
+      ),
+      RescueUnit(
+        id: 'unit-56-amb',
+        callSign: 'AMBULANCE-56',
+        type: UnitType.ambulance,
+        position: const LatLng(14.6482187, 120.9768730),
+        stationId: 'station-56',
+        barangayId: '56',
+      ),
+    ];
 
 class SOSRequest {
   final String id;

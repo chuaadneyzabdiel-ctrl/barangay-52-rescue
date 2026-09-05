@@ -13,6 +13,7 @@ import '../../widgets/map_layers_sheet.dart';
 import '../../widgets/rescue_map_tile_layer.dart';
 import '../../widgets/sos_scene_photo.dart';
 import '../../models/rescue_models.dart';
+import '../../models/response_unit_status.dart';
 import '../../providers/rescue_provider.dart';
 import '../../utils/geo_utils.dart';
 import '../../utils/unit_sos_compatibility.dart';
@@ -36,7 +37,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
   bool _isAccepting = false;
   bool _isCompleting = false;
   bool _isCancelling = false;
-  StreamSubscription<bool>? _approvalSub;
+  StreamSubscription<ResponseUnitStatus>? _approvalSub;
   bool _revokedHandled = false;
 
   RescueProvider? _boundProvider;
@@ -130,7 +131,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
           if (!ok && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Responder account pending LGU approval.'),
+                content: Text('This unit is not In service yet.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -141,15 +142,19 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
       _approvalSub?.cancel();
       _approvalSub = provider.firebaseSync
-          .watchResponderApproval(widget.unitId)
-          .listen((approved) async {
-        if (!approved && mounted && !_revokedHandled) {
+          .watchResponseUnitStatus(widget.unitId)
+          .listen((status) async {
+        if (status == ResponseUnitStatus.disabled &&
+            mounted &&
+            !_revokedHandled) {
           _revokedHandled = true;
           await provider.responderLogout(widget.unitId);
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('LGU revoked this responder. You have been logged out.'),
+              content: Text(
+                'This response unit is disabled. You have been logged out.',
+              ),
               backgroundColor: Colors.orange,
             ),
           );
@@ -212,7 +217,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
           if (!ok && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Responder account pending LGU approval.'),
+                content: Text('This unit is not In service yet.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -468,7 +473,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Responder account pending LGU approval.'),
+              content: Text('This unit is not In service yet.'),
               backgroundColor: Colors.orange,
             ),
           );
@@ -651,50 +656,131 @@ class _DispatchScreenState extends State<DispatchScreen> {
     Navigator.of(context).pop();
   }
 
+  Future<void> _logoutIfUnitDisabled(RescueProvider provider) async {
+    if (_revokedHandled || !mounted) return;
+    final unitStatus = provider.responseUnitStatusForUnit(widget.unitId);
+    final loginStatus = provider.responseUnitStatusForLogin(
+      provider.currentResponderUnitLoginId,
+    );
+    if (unitStatus != ResponseUnitStatus.disabled &&
+        loginStatus != ResponseUnitStatus.disabled) {
+      return;
+    }
+    _revokedHandled = true;
+    await provider.responderLogout(widget.unitId);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'This response unit is disabled. You have been logged out.',
+        ),
+        backgroundColor: Colors.orange,
+      ),
+    );
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(builder: (_) => const SessionBootstrapScreen()),
+      (_) => false,
+    );
+  }
+
   Future<void> _handleAccept(SOSRequest request) async {
     if (_isAccepting) return;
+    final provider = context.read<RescueProvider>();
+    final readiness = provider.responseUnitStatusForUnit(widget.unitId);
+    final responderUnit = provider.rescueUnits
+            .where((u) => u.id == widget.unitId)
+            .firstOrNull ??
+        provider.rescueUnitsRoster.where((u) => u.id == widget.unitId).firstOrNull;
+    final responderUnitType = responderUnit?.type;
+
+    if (!readiness.canTakeSos) {
+      await _showAcceptBlockedDialog(
+        readiness.cannotTakeSosMessage.isNotEmpty
+            ? readiness.cannotTakeSosMessage
+            : 'Set this unit to In service in the LGU Account Center first.',
+      );
+      return;
+    }
+    if (responderUnitType == null) {
+      await _showAcceptBlockedDialog('Unit details unavailable. Try signing in again.');
+      return;
+    }
+    if (!canUnitHandleSos(responderUnitType, request.sosType)) {
+      await _showAcceptBlockedDialog(
+        '${unitTypeLabel(responderUnitType)} cannot handle '
+        '${SOSTypeInfo.forType(request.sosType).label.toLowerCase()} SOS.',
+      );
+      return;
+    }
+
     setState(() => _isAccepting = true);
 
     try {
-      final provider = context.read<RescueProvider>();
       await provider.acceptDispatch(unitId: widget.unitId, sosId: request.id);
 
-      final unit = provider.currentResponderUnit?.id == widget.unitId
+      RescueUnit? unit = provider.currentResponderUnit?.id == widget.unitId
           ? provider.currentResponderUnit
           : provider.rescueUnits.where((u) => u.id == widget.unitId).firstOrNull;
+      unit ??= provider.rescueUnitsRoster
+          .where((u) => u.id == widget.unitId)
+          .map(
+            (roster) => RescueUnit(
+              id: roster.id,
+              callSign: roster.callSign,
+              type: roster.type,
+              status: UnitStatus.enRoute,
+              position: provider.currentPosition ?? roster.position,
+              assignedSOSId: request.id,
+              stationId: roster.stationId,
+              barangayId: roster.barangayId,
+            ),
+          )
+          .firstOrNull;
 
       if (!mounted) return;
 
       if (unit == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Unit not found. Please try again.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        await _showAcceptBlockedDialog('Unit not found. Please try again.');
         return;
       }
 
-      Navigator.push(
+      final navUnit = unit;
+      if (!mounted) return;
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => RoutePreviewScreen(
             sosRequest: request,
-            responderUnit: unit,
+            responderUnit: navUnit,
           ),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Dispatch failed: $e'),
-          backgroundColor: Colors.red,
-        ),
+      await _showAcceptBlockedDialog(
+        e.toString().replaceFirst('Bad state: ', ''),
       );
     } finally {
       if (mounted) setState(() => _isAccepting = false);
     }
+  }
+
+  Future<void> _showAcceptBlockedDialog(String message) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cannot accept yet'),
+        content: Text(message),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -703,6 +789,17 @@ class _DispatchScreenState extends State<DispatchScreen> {
       backgroundColor: const Color(0xFF0D1B2A),
       body: Consumer<RescueProvider>(
         builder: (context, provider, _) {
+          final unitReadiness =
+              provider.responseUnitStatusForUnit(widget.unitId);
+          if (unitReadiness == ResponseUnitStatus.disabled ||
+              provider.responseUnitStatusForLogin(
+                    provider.currentResponderUnitLoginId,
+                  ) ==
+                  ResponseUnitStatus.disabled) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _logoutIfUnitDisabled(provider);
+            });
+          }
           final pending = provider.pendingRequests;
           final responderUnit = provider.rescueUnits
                   .where((u) => u.id == widget.unitId)
@@ -730,7 +827,9 @@ class _DispatchScreenState extends State<DispatchScreen> {
                 ),
                 children: [
                   const RescueMapTileLayer(),
-                  ...BarangayCoverage.mapLayers(),
+                  ...BarangayCoverage.mapLayers(
+                    barangayId: responderUnit?.barangayId,
+                  ),
                   PolygonLayer(
                     polygons: provider.hazardZones
                         .where((h) => h.isActive)
@@ -804,10 +903,38 @@ class _DispatchScreenState extends State<DispatchScreen> {
                   child: _buildLocationBanner(context, provider),
                 ),
 
+              if (!unitReadiness.canTakeSos &&
+                  unitReadiness != ResponseUnitStatus.disabled)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top +
+                      (provider.locationStatus?.needsPrompt == true ? 64 : 8),
+                  left: 12,
+                  right: 12,
+                  child: Material(
+                    color: Colors.orange.shade800,
+                    borderRadius: BorderRadius.circular(10),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      child: Text(
+                        unitReadiness.cannotTakeSosMessage,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
               // Top bar with title + status chip
               Positioned(
                 top: MediaQuery.of(context).padding.top +
-                    (provider.locationStatus?.needsPrompt == true ? 56 : 8),
+                    (provider.locationStatus?.needsPrompt == true ? 56 : 8) +
+                    (!unitReadiness.canTakeSos &&
+                            unitReadiness != ResponseUnitStatus.disabled
+                        ? 52
+                        : 0),
                 left: 12,
                 right: 12,
                 child: Row(
@@ -1111,13 +1238,16 @@ class _DispatchScreenState extends State<DispatchScreen> {
                                 responderPosition:
                                     provider.currentPosition,
                                 isAccepting: _isAccepting,
-                                canAccept: responderUnitType == null
-                                    ? false
-                                    : canUnitHandleSos(
-                                        responderUnitType, request.sosType),
-                                ineligibleReason: responderUnitType == null
-                                    ? 'Unit details unavailable.'
-                                    : '${unitTypeLabel(responderUnitType)} cannot handle ${SOSTypeInfo.forType(request.sosType).label.toLowerCase()} SOS.',
+                                canAccept: true,
+                                ineligibleReason: !provider
+                                        .canResponseUnitTakeSos(widget.unitId)
+                                    ? unitReadiness.cannotTakeSosMessage
+                                    : responderUnitType == null
+                                        ? 'Unit details unavailable.'
+                                        : !canUnitHandleSos(
+                                                responderUnitType, request.sosType)
+                                            ? '${unitTypeLabel(responderUnitType)} cannot handle ${SOSTypeInfo.forType(request.sosType).label.toLowerCase()} SOS.'
+                                            : null,
                                 onAccept: () => _handleAccept(request),
                                 onLocateTap: () {
                                   _mapController.move(request.location, 16);
@@ -1517,7 +1647,7 @@ class _DispatchCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 14),
-            if (!canAccept && ineligibleReason != null) ...[
+            if (ineligibleReason != null) ...[
               Text(
                 ineligibleReason!,
                 style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
@@ -1528,7 +1658,7 @@ class _DispatchCard extends StatelessWidget {
               width: double.infinity,
               height: 48,
               child: ElevatedButton.icon(
-                onPressed: (isAccepting || !canAccept) ? null : onAccept,
+                onPressed: isAccepting ? null : onAccept,
                 icon: const Icon(Icons.navigation),
                 label: const Text(
                   'ACCEPT & NAVIGATE',

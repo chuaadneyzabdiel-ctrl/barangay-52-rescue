@@ -9,6 +9,7 @@ import '../map/barangay_coverage.dart';
 import '../map/rescue_map_tiles.dart';
 import '../models/map_layer_models.dart';
 import '../models/rescue_models.dart';
+import '../models/response_unit_status.dart';
 import '../providers/map_theme_provider.dart';
 import '../providers/rescue_provider.dart';
 import '../services/map_layer_data_service.dart';
@@ -66,7 +67,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
   /// Seconds with low/no GPS speed — drives stopped-time ETA creep.
   int _secondsStopped = 0;
   Timer? _etaTimer;
-  StreamSubscription<bool>? _approvalSub;
+  StreamSubscription<ResponseUnitStatus>? _approvalSub;
   bool _revokedHandled = false;
   bool _chatSheetOpen = false;
   double _mapZoom = 14;
@@ -145,15 +146,19 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
 
       _approvalSub?.cancel();
       _approvalSub = provider.firebaseSync
-          .watchResponderApproval(widget.responderUnit.id)
-          .listen((approved) async {
-        if (!approved && mounted && !_revokedHandled) {
+          .watchResponseUnitStatus(widget.responderUnit.id)
+          .listen((status) async {
+        if (status == ResponseUnitStatus.disabled &&
+            mounted &&
+            !_revokedHandled) {
           _revokedHandled = true;
           await provider.responderLogout(widget.responderUnit.id);
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('LGU revoked this responder. You have been logged out.'),
+              content: Text(
+                'This response unit is disabled. You have been logged out.',
+              ),
               backgroundColor: Colors.orange,
             ),
           );
@@ -182,7 +187,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Responder account pending LGU approval.'),
+                content: Text('This unit is not In service yet.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -1210,7 +1215,9 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                 ),
                 children: [
                   mapTheme.buildTileLayer(),
-                  ...BarangayCoverage.mapLayers(),
+                  ...BarangayCoverage.mapLayers(
+                    barangayId: widget.responderUnit.barangayId,
+                  ),
 
                   // Hazard zone polygons
                   PolygonLayer(

@@ -38,17 +38,19 @@ class RoleSelectionScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 24),
                     const Text(
-                      'BARANGAY 52, CALOOCAN CITY',
+                      'CALOOCAN CITY',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 28,
+                        fontSize: 26,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 4,
+                        letterSpacing: 2.5,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       'Integrated Rescue Operations',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey[400],
                         fontSize: 16,
@@ -58,6 +60,7 @@ class RoleSelectionScreen extends StatelessWidget {
                     const SizedBox(height: 8),
                     Text(
                       'Dispatch & Dynamic Relocation System',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey[500],
                         fontSize: 13,

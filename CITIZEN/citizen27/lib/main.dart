@@ -46,7 +46,7 @@ class RescueApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => MapThemeProvider()),
       ],
       child: MaterialApp(
-        title: 'Barangay 52 Rescue',
+        title: 'Caloocan City Integrated Rescue Operations',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorSchemeSeed: const Color(0xFF1B3A5C),

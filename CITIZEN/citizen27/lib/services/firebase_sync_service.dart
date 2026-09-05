@@ -3,6 +3,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/barangay.dart';
 import '../models/rescue_models.dart';
+import '../models/response_unit_status.dart';
 
 /// Real-time sync layer between all devices via Firebase Realtime Database.
 ///
@@ -30,6 +31,7 @@ class FirebaseSyncService {
     String? email,
     bool? isGuest,
     bool? approvedByLgu,
+    String? responseUnitStatus,
     String? barangayId,
   }) async {
     final ref = _db.ref('users/$userId');
@@ -42,6 +44,8 @@ class FirebaseSyncService {
       if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
       if (isGuest != null) 'isGuest': isGuest,
       if (approvedByLgu != null) 'approvedByLgu': approvedByLgu,
+      if (responseUnitStatus != null && responseUnitStatus.trim().isNotEmpty)
+        'responseUnitStatus': responseUnitStatus.trim(),
       'barangayId': normalizeBarangayId(barangayId),
       'updatedAt': now,
       'createdAt': (existing?['createdAt'] as num?)?.toInt() ?? now,
@@ -107,38 +111,66 @@ class FirebaseSyncService {
     });
   }
 
-  Future<void> setResponderApproval({
+  Future<void> setResponseUnitStatus({
     required String responderId,
-    required bool approved,
+    required ResponseUnitStatus status,
+    String? name,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     await _db.ref('users/$responderId').update({
       'role': 'responder',
-      'approvedByLgu': approved,
+      if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+      'responseUnitStatus': status.wireName,
+      'approvedByLgu': status.canTakeSos,
       'updatedAt': now,
     });
     await _db.ref('responders/$responderId').update({
-      'approvedByLgu': approved,
+      'responseUnitStatus': status.wireName,
+      'approvedByLgu': status.canTakeSos,
       'updatedAt': now,
     });
   }
 
+  Future<void> setResponderApproval({
+    required String responderId,
+    required bool approved,
+  }) async {
+    await setResponseUnitStatus(
+      responderId: responderId,
+      status: approved
+          ? ResponseUnitStatus.inService
+          : ResponseUnitStatus.outOfService,
+    );
+  }
+
   Future<bool?> getResponderApproval(String responderId) async {
-    final userSnap = await _db.ref('users/$responderId/approvedByLgu').get();
-    if (userSnap.value is bool) return userSnap.value as bool;
-    final responderSnap =
-        await _db.ref('responders/$responderId/approvedByLgu').get();
-    if (responderSnap.value is bool) return responderSnap.value as bool;
-    return null;
+    final status = await getResponseUnitStatus(responderId);
+    return status.canTakeSos;
+  }
+
+  Future<ResponseUnitStatus> getResponseUnitStatus(String responderId) async {
+    final userSnap = await _db.ref('users/$responderId').get();
+    final userRaw = userSnap.value;
+    if (userRaw is Map) {
+      return responseUnitStatusFromUser(Map<dynamic, dynamic>.from(userRaw));
+    }
+    return ResponseUnitStatus.inService;
   }
 
   /// Watches approval flag for a responder (true/false).
-  /// Uses `users/{id}/approvedByLgu` as the source of truth.
+  /// Uses `users/{id}` operational status as the source of truth.
   Stream<bool> watchResponderApproval(String responderId) {
-    final ref = _db.ref('users/$responderId/approvedByLgu');
-    return ref.onValue.map((event) {
-      final v = event.snapshot.value;
-      return v == true;
+    return watchResponseUnitStatus(responderId).map((status) => status.canTakeSos);
+  }
+
+  /// Watches operational status on `users/{id}`.
+  Stream<ResponseUnitStatus> watchResponseUnitStatus(String responderId) {
+    return _db.ref('users/$responderId').onValue.map((event) {
+      final raw = event.snapshot.value;
+      if (raw is Map) {
+        return responseUnitStatusFromUser(Map<dynamic, dynamic>.from(raw));
+      }
+      return ResponseUnitStatus.inService;
     });
   }
 
@@ -643,6 +675,60 @@ class FirebaseSyncService {
       return _parseBarangays(snap.value);
     } catch (_) {
       return List<BarangayRecord>.from(kBuiltInBarangays);
+    }
+  }
+
+  List<RescueUnit> _parseRescueUnitRoster(Object? raw) {
+    if (raw is! Map) return builtInRescueUnits();
+    final out = <RescueUnit>[];
+    for (final e in raw.entries) {
+      final value = e.value;
+      if (value is! Map) continue;
+      final map = Map<dynamic, dynamic>.from(value);
+      if (map['softDeletedAt'] != null) continue;
+      final id = (map['id']?.toString().trim().isNotEmpty == true)
+          ? map['id'].toString()
+          : e.key.toString();
+      if (id.isEmpty) continue;
+      out.add(RescueUnit.fromRosterMap(id, map));
+    }
+    out.sort((a, b) => a.callSign.compareTo(b.callSign));
+    return out;
+  }
+
+  Stream<List<RescueUnit>> watchRescueUnitRoster() {
+    return _db.ref('rescue_unit_roster').onValue.map((event) {
+      return _parseRescueUnitRoster(event.snapshot.value);
+    });
+  }
+
+  Future<void> seedDefaultRescueUnitsIfMissing() async {
+    for (final unit in builtInRescueUnits()) {
+      final ref = _db.ref('rescue_unit_roster/${unit.id}');
+      final snap = await ref.get();
+      if (!snap.exists) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await ref.set({
+          ...unit.toRosterJson(),
+          'createdAt': now,
+          'updatedAt': now,
+          'softDeletedAt': null,
+        });
+        continue;
+      }
+      final raw = snap.value;
+      if (raw is! Map) continue;
+      if (raw['softDeletedAt'] != null) continue;
+      final lat = (raw['lat'] as num?)?.toDouble();
+      final isLegacyFar =
+          (unit.id == 'unit-2' && lat != null && lat > 14.70) ||
+          (unit.id == 'unit-3' && lat != null && lat > 14.70);
+      if (!isLegacyFar) continue;
+      await ref.update({
+        'lat': unit.position.latitude,
+        'lng': unit.position.longitude,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
     }
   }
 }

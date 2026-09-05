@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../models/osrm_navigation_models.dart';
 import '../models/barangay.dart';
 import '../models/rescue_models.dart';
+import '../models/response_unit_status.dart';
 import '../services/a_star_routing_service.dart';
 import '../services/dynamic_relocation_service.dart';
 import '../services/firebase_sync_service.dart';
@@ -67,6 +68,7 @@ class RescueProvider extends ChangeNotifier {
   StreamSubscription? _sosHistorySub;
   StreamSubscription? _usersSub;
   StreamSubscription? _unitAccountsSub;
+  StreamSubscription? _rosterSub;
 
   // GPS upload timer for responders
   Timer? _gpsUploadTimer;
@@ -118,6 +120,42 @@ class RescueProvider extends ChangeNotifier {
   bool get isCitizenRegistered => _citizenAccessMode == CitizenAccessMode.registered;
   List<Map<String, dynamic>> get accountUsers => List.unmodifiable(_accountUsers);
   List<Map<String, dynamic>> get unitAccounts => List.unmodifiable(_unitAccounts);
+
+  ResponseUnitStatus responseUnitStatusForUnit(String unitId) {
+    final fromCache = _accountUsers
+        .where((u) => (u['id']?.toString() ?? '') == unitId)
+        .firstOrNull;
+    return responseUnitStatusFromUser(fromCache);
+  }
+
+  ResponseUnitStatus responseUnitStatusForLogin(String? loginId) {
+    final id = loginId?.trim().toLowerCase() ?? '';
+    if (id.isEmpty) return ResponseUnitStatus.outOfService;
+    final account = _unitAccounts.where((a) {
+      final login = (a['loginId'] ?? a['id'])?.toString().trim().toLowerCase();
+      return login == id && a['softDeletedAt'] == null;
+    }).firstOrNull;
+    if (account == null) return ResponseUnitStatus.outOfService;
+    if (unitLoginIsDisabled(account['status']?.toString())) {
+      return ResponseUnitStatus.disabled;
+    }
+    final unitId = account['responderUnitId']?.toString() ?? '';
+    if (unitId.isEmpty) return ResponseUnitStatus.outOfService;
+    return responseUnitStatusForUnit(unitId);
+  }
+
+  bool canResponseUnitTakeSos(String unitId) =>
+      responseUnitStatusForUnit(unitId).canTakeSos;
+
+  Future<ResponseUnitStatus> _resolveResponseUnitStatus(String responderId) async {
+    final fromCache = _accountUsers
+        .where((u) => (u['id']?.toString() ?? '') == responderId)
+        .firstOrNull;
+    if (fromCache != null) {
+      return responseUnitStatusFromUser(fromCache);
+    }
+    return _firebaseSync.getResponseUnitStatus(responderId);
+  }
   String? get currentResponderUnitLoginId => _currentResponderUnitLoginId;
   String? get currentResponderSessionId => _currentResponderSessionId;
 
@@ -162,64 +200,10 @@ class RescueProvider extends ChangeNotifier {
 
   /// Canonical roster of rescue units (same list for LGU and responders).
   List<RescueUnit> get rescueUnitsRoster => List.unmodifiable(_rescueUnitsRoster);
-  static final List<RescueUnit> _rescueUnitsRoster = [
-    RescueUnit(
-      id: 'unit-1',
-      callSign: 'AMBULANCE-01',
-      type: UnitType.ambulance,
-      position: const LatLng(14.6544, 120.9840),
-      stationId: 'station-south-1',
-      barangayId: kDefaultBarangayId,
-    ),
-    RescueUnit(
-      id: 'unit-2',
-      callSign: 'FIRE-01',
-      type: UnitType.fireTruck,
-      position: const LatLng(14.7510, 121.0560),
-      stationId: 'station-north-1',
-      barangayId: kDefaultBarangayId,
-    ),
-    RescueUnit(
-      id: 'unit-3',
-      callSign: 'TANOD-01',
-      type: UnitType.rescue,
-      position: const LatLng(14.7350, 121.0350),
-      stationId: 'station-north-2',
-      barangayId: kDefaultBarangayId,
-    ),
-    RescueUnit(
-      id: 'unit-53-amb',
-      callSign: 'AMBULANCE-53',
-      type: UnitType.ambulance,
-      position: const LatLng(14.6482, 120.9781),
-      stationId: 'station-53',
-      barangayId: '53',
-    ),
-    RescueUnit(
-      id: 'unit-54-fire',
-      callSign: 'FIRE-54',
-      type: UnitType.fireTruck,
-      position: const LatLng(14.6459, 120.9756),
-      stationId: 'station-54',
-      barangayId: '54',
-    ),
-    RescueUnit(
-      id: 'unit-55-rescue',
-      callSign: 'TANOD-55',
-      type: UnitType.rescue,
-      position: const LatLng(14.6491, 120.9762),
-      stationId: 'station-55',
-      barangayId: '55',
-    ),
-    RescueUnit(
-      id: 'unit-56-amb',
-      callSign: 'AMBULANCE-56',
-      type: UnitType.ambulance,
-      position: const LatLng(14.6482187, 120.9768730),
-      stationId: 'station-56',
-      barangayId: '56',
-    ),
-  ];
+
+  List<RescueUnit> get assignableEmergencyUnits =>
+      List.unmodifiable(_rescueUnitsRoster);
+  List<RescueUnit> _rescueUnitsRoster = builtInRescueUnits();
 
   /// When a responder selects a unit, we keep it so GPS upload can use it before Firebase stream delivers.
   RescueUnit? _currentResponderUnit;
@@ -283,6 +267,14 @@ class RescueProvider extends ChangeNotifier {
     if (loginId == null || responderUnitId == null || sessionId == null) {
       return false;
     }
+    // Refresh TTL before validating so a slow Accept is not blocked by expiry.
+    try {
+      await _firebaseSync.heartbeatResponderSessionLocks(
+        loginId: loginId,
+        responderUnitId: responderUnitId,
+        sessionId: sessionId,
+      );
+    } catch (_) {}
     final ok = await _firebaseSync.isResponderSessionValid(
       loginId: loginId,
       responderUnitId: responderUnitId,
@@ -566,6 +558,16 @@ class RescueProvider extends ChangeNotifier {
       },
     );
 
+    _rosterSub = _firebaseSync.watchRescueUnitRoster().listen(
+      (rows) {
+        _rescueUnitsRoster = rows;
+        notifyListeners();
+      },
+      onError: (e, st) {},
+    );
+
+    unawaited(_firebaseSync.seedDefaultRescueUnitsIfMissing());
+
     _hazardSub = _firebaseSync.watchAllHazardZones().listen(
       (zones) {
         _hazardZones = zones;
@@ -599,6 +601,7 @@ class RescueProvider extends ChangeNotifier {
     _sosHistorySub?.cancel();
     _usersSub?.cancel();
     _unitAccountsSub?.cancel();
+    _rosterSub?.cancel();
     _listenersStarted = false;
   }
 
@@ -639,12 +642,21 @@ class RescueProvider extends ChangeNotifier {
   /// [knownUnit] can be passed when the unit is not yet in Firebase (e.g. right after selecting from roster).
   void startGpsUpload(String unitId, [RescueUnit? knownUnit]) {
     _gpsUploadTimer?.cancel();
-    _gpsUploadTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (_currentPosition == null) return;
-      RescueUnit? unit = knownUnit?.id == unitId ? knownUnit : _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+
+    Future<void> pushOnce() async {
+      RescueUnit? unit =
+          knownUnit?.id == unitId ? knownUnit : _resolveUnitForDispatch(unitId);
       if (unit == null) return;
-      unit.position = _currentPosition!;
-      _firebaseSync.updateUnitLocation(unit);
+      if (_currentPosition != null) unit.position = _currentPosition!;
+      setCurrentResponderUnit(unit);
+      try {
+        await _firebaseSync.updateUnitLocation(unit);
+      } catch (_) {}
+    }
+
+    unawaited(pushOnce());
+    _gpsUploadTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(pushOnce());
     });
   }
 
@@ -779,32 +791,48 @@ class RescueProvider extends ChangeNotifier {
   }
 
   Future<bool> isResponderApproved(String responderId) async {
-    final fromCache = _accountUsers
-        .where((u) => (u['id']?.toString() ?? '') == responderId)
-        .firstOrNull;
-    if (fromCache != null) {
-      return fromCache['approvedByLgu'] == true;
+    return (await _resolveResponseUnitStatus(responderId)).canTakeSos;
+  }
+
+  Future<void> setResponseUnitStatus({
+    required String responderId,
+    required ResponseUnitStatus status,
+    String? name,
+  }) async {
+    await _firebaseSync.setResponseUnitStatus(
+      responderId: responderId,
+      status: status,
+      name: name,
+    );
+    final idx = _accountUsers.indexWhere(
+      (u) => (u['id']?.toString() ?? '') == responderId,
+    );
+    final next = idx >= 0
+        ? Map<String, dynamic>.from(_accountUsers[idx])
+        : <String, dynamic>{'id': responderId, 'role': 'responder'};
+    next['role'] = 'responder';
+    if (name != null && name.trim().isNotEmpty) next['name'] = name.trim();
+    next['responseUnitStatus'] = status.wireName;
+    next['approvedByLgu'] = status.canTakeSos;
+    next['updatedAt'] = DateTime.now().millisecondsSinceEpoch;
+    if (idx >= 0) {
+      _accountUsers = [..._accountUsers]..[idx] = next;
+    } else {
+      _accountUsers = [..._accountUsers, next];
     }
-    final remote = await _firebaseSync.getResponderApproval(responderId);
-    return remote == true;
+    notifyListeners();
   }
 
   Future<void> setResponderApproval({
     required String responderId,
     required bool approved,
   }) async {
-    await _firebaseSync.setResponderApproval(
+    await setResponseUnitStatus(
       responderId: responderId,
-      approved: approved,
+      status: approved
+          ? ResponseUnitStatus.inService
+          : ResponseUnitStatus.outOfService,
     );
-    _accountUsers = _accountUsers.map((u) {
-      if ((u['id']?.toString() ?? '') != responderId) return u;
-      final next = Map<String, dynamic>.from(u);
-      next['approvedByLgu'] = approved;
-      next['updatedAt'] = DateTime.now().millisecondsSinceEpoch;
-      return next;
-    }).toList();
-    notifyListeners();
   }
 
   /// True if LGU banned this citizen in RTDB (`users/{id}/bannedByLgu`).
@@ -892,7 +920,7 @@ class RescueProvider extends ChangeNotifier {
     }
     final roster =
         _rescueUnitsRoster.where((u) => u.id == responderUnitId).firstOrNull;
-    if (roster == null) throw StateError('Responder unit not found.');
+    if (roster == null) throw StateError('Response unit not found.');
     final salt = PasswordUtils.generateSalt();
     final hash = PasswordUtils.hashPassword(password: tempPassword, salt: salt);
     await _firebaseSync.createUnitAccount(
@@ -955,17 +983,28 @@ class RescueProvider extends ChangeNotifier {
     bool? mustChangePassword,
   }) async {
     String? unitType;
+    String? wireStatus = status?.trim();
+    if (wireStatus != null && wireStatus.isNotEmpty) {
+      final lower = wireStatus.toLowerCase();
+      if (lower == 'active' || lower == 'disabled') {
+        wireStatus = lower;
+      } else {
+        wireStatus = parseResponseUnitStatus(wireStatus).wireName;
+      }
+    } else {
+      wireStatus = null;
+    }
     if (responderUnitId != null) {
       final roster =
           _rescueUnitsRoster.where((u) => u.id == responderUnitId).firstOrNull;
-      if (roster == null) throw StateError('Responder unit not found.');
+      if (roster == null) throw StateError('Response unit not found.');
       unitType = roster.type.name;
     }
     await _firebaseSync.updateUnitAccount(
       loginId,
       responderUnitId: responderUnitId,
       unitType: unitType,
-      status: status,
+      status: wireStatus,
       mustChangePassword: mustChangePassword,
     );
     await _firebaseSync.logAuditEvent(
@@ -974,7 +1013,7 @@ class RescueProvider extends ChangeNotifier {
       targetId: loginId,
       details: {
         if (responderUnitId != null) 'responderUnitId': responderUnitId,
-        if (status != null) 'status': status,
+        if (wireStatus != null) 'status': wireStatus,
         if (mustChangePassword != null) 'mustChangePassword': mustChangePassword,
       },
     );
@@ -1009,10 +1048,8 @@ class RescueProvider extends ChangeNotifier {
     if (account['softDeletedAt'] != null) {
       throw StateError('Account has been deleted by LGU.');
     }
-    final status =
-        (account['status']?.toString() ?? 'active').trim().toLowerCase();
-    if (status != 'active') {
-      throw StateError('Account is disabled.');
+    if (unitLoginIsDisabled(account['status']?.toString())) {
+      throw StateError('This responder login is disabled and cannot sign in.');
     }
     final hash = account['passwordHash']?.toString() ?? '';
     final salt = account['passwordSalt']?.toString() ?? '';
@@ -1025,6 +1062,10 @@ class RescueProvider extends ChangeNotifier {
     final responderUnitId = account['responderUnitId']?.toString() ?? '';
     if (responderUnitId.isEmpty) {
       throw StateError('No unit is mapped to this account.');
+    }
+    final unitStatus = await _firebaseSync.getResponseUnitStatus(responderUnitId);
+    if (!unitStatus.canSignIn) {
+      throw StateError(unitStatus.signInBlockedMessage);
     }
     final sessionId = const Uuid().v4();
     final lockRes = await _firebaseSync.acquireResponderSessionLocks(
@@ -1415,6 +1456,31 @@ class RescueProvider extends ChangeNotifier {
 
   // --- Dispatch & Routing ---
 
+  /// Live GPS unit, else the in-memory responder session unit, else roster + GPS/station.
+  RescueUnit? _resolveUnitForDispatch(String unitId) {
+    final live = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+    if (live != null) {
+      if (_currentPosition != null) live.position = _currentPosition!;
+      return live;
+    }
+    if (_currentResponderUnit?.id == unitId) {
+      final unit = _currentResponderUnit!;
+      if (_currentPosition != null) unit.position = _currentPosition!;
+      return unit;
+    }
+    final roster = _rescueUnitsRoster.where((u) => u.id == unitId).firstOrNull;
+    if (roster == null) return null;
+    return RescueUnit(
+      id: roster.id,
+      callSign: roster.callSign,
+      type: roster.type,
+      status: UnitStatus.idle,
+      position: _currentPosition ?? roster.position,
+      stationId: roster.stationId,
+      barangayId: roster.barangayId,
+    );
+  }
+
   Future<void> acceptDispatch({
     required String unitId,
     required String sosId,
@@ -1422,10 +1488,13 @@ class RescueProvider extends ChangeNotifier {
     if (_currentRole == UserRole.responder) {
       final lockOk = await ensureResponderSessionIsValid(unitId: unitId);
       if (!lockOk) {
-        throw StateError('Session is active elsewhere. Please sign in again.');
+        throw StateError(
+          'Your responder session expired or is missing. '
+          'Sign out and sign in again, then retry Accept.',
+        );
       }
     }
-    final unit = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+    final unit = _resolveUnitForDispatch(unitId);
     final sos = _sosRequests.where((r) => r.id == sosId).firstOrNull;
 
     if (unit == null) {
@@ -1440,10 +1509,23 @@ class RescueProvider extends ChangeNotifier {
         '${unitTypeLabel(unit.type)} unit cannot accept ${SOSTypeInfo.forType(sos.sosType).label.toLowerCase()} SOS.',
       );
     }
-    final approved = await isResponderApproved(unitId);
-    if (!approved) {
-      throw StateError('Responder is not approved by LGU yet.');
+    final readiness = await _resolveResponseUnitStatus(unitId);
+    if (!readiness.canTakeSos) {
+      throw StateError(
+        readiness.cannotTakeSosMessage.isNotEmpty
+            ? readiness.cannotTakeSosMessage
+            : 'This unit is not In service.',
+      );
     }
+
+    // Ensure the unit exists in live locations so accept/write and UI stay in sync.
+    setCurrentResponderUnit(unit);
+    if (!_rescueUnits.any((u) => u.id == unit.id)) {
+      _rescueUnits = [..._rescueUnits, unit];
+    }
+    try {
+      await _firebaseSync.updateUnitLocation(unit);
+    } catch (_) {}
 
     // Remember whether this dispatch used a relocation suggestion (for evaluation).
     final usedSuggestion = _relocationSuggestions.containsKey(unit.id);
@@ -1477,7 +1559,8 @@ class RescueProvider extends ChangeNotifier {
       destinationLocation: sos.location,
     );
 
-    await computeRoute(from: unit.position, to: sos.location);
+    // Do not block Accept on slow OSRM — route preview can compute/show when ready.
+    unawaited(computeRoute(from: unit.position, to: sos.location));
     _refreshRelocations();
     notifyListeners();
   }
@@ -1695,14 +1778,15 @@ class RescueProvider extends ChangeNotifier {
         throw StateError('Session is active elsewhere. Please sign in again.');
       }
     }
-    final approved = await isResponderApproved(unit.id);
-    if (!approved) {
+    final status = await _resolveResponseUnitStatus(unit.id);
+    if (!status.canTakeSos) {
       await _firebaseSync.upsertUserAccount(
         userId: unit.id,
         role: 'responder',
         name: unit.callSign,
         isGuest: false,
         approvedByLgu: false,
+        responseUnitStatus: status.wireName,
       );
       await _firebaseSync.upsertResponderAccount(
         userId: unit.id,
@@ -1720,6 +1804,7 @@ class RescueProvider extends ChangeNotifier {
       name: unit.callSign,
       isGuest: false,
       approvedByLgu: true,
+      responseUnitStatus: ResponseUnitStatus.inService.wireName,
     );
     await _firebaseSync.upsertResponderAccount(
       userId: unit.id,

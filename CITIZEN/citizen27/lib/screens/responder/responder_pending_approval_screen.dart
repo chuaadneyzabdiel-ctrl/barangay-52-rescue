@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/rescue_models.dart';
+import '../../models/response_unit_status.dart';
 import '../../providers/rescue_provider.dart';
 import '../session_bootstrap_screen.dart';
 import 'dispatch_screen.dart';
@@ -22,7 +23,7 @@ class ResponderPendingApprovalScreen extends StatefulWidget {
 class _ResponderPendingApprovalScreenState
     extends State<ResponderPendingApprovalScreen> {
   Timer? _poll;
-  StreamSubscription<bool>? _approvalSub;
+  StreamSubscription<ResponseUnitStatus>? _approvalSub;
   bool _waiting = false;
   bool _navigated = false;
   bool _revokedHandled = false;
@@ -55,16 +56,19 @@ class _ResponderPendingApprovalScreenState
 
     _approvalSub?.cancel();
     _approvalSub = provider.firebaseSync
-        .watchResponderApproval(widget.rosterUnit.id)
-        .listen((approved) async {
-      if (!approved && mounted && !_revokedHandled) {
+        .watchResponseUnitStatus(widget.rosterUnit.id)
+        .listen((status) async {
+      if (!mounted || _navigated) return;
+      if (status == ResponseUnitStatus.disabled && !_revokedHandled) {
         _revokedHandled = true;
         _poll?.cancel();
         await provider.responderLogout(widget.rosterUnit.id);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('LGU revoked this responder. You have been logged out.'),
+            content: Text(
+              'This response unit is disabled. You have been logged out.',
+            ),
             backgroundColor: Colors.orange,
           ),
         );
@@ -73,6 +77,13 @@ class _ResponderPendingApprovalScreenState
           MaterialPageRoute<void>(builder: (_) => const SessionBootstrapScreen()),
           (_) => false,
         );
+        return;
+      }
+      if (status.canTakeSos) {
+        setState(() => _waiting = false);
+        await _tryEnterDispatch(provider, unit);
+      } else if (mounted) {
+        setState(() => _waiting = true);
       }
     });
 
@@ -167,7 +178,7 @@ class _ResponderPendingApprovalScreenState
                 const CircularProgressIndicator(color: Colors.white70),
                 const SizedBox(height: 24),
                 const Text(
-                  'Waiting for LGU approval',
+                  'Waiting to go In service',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.white,
@@ -177,7 +188,7 @@ class _ResponderPendingApprovalScreenState
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Your unit (${widget.rosterUnit.callSign}) must be approved before you can go online. '
+                  'Your unit (${widget.rosterUnit.callSign}) must be set In service by LGU before you can take SOS. '
                   'You can leave this screen and return later — your session is saved.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey[400], fontSize: 14),

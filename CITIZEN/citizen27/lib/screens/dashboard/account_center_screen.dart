@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/response_unit_status.dart';
 import '../../providers/rescue_provider.dart';
 import '../../services/auth_service.dart';
 import '../legal/terms_conditions_screen.dart';
@@ -73,13 +74,13 @@ class AccountCenterScreen extends StatelessWidget {
             const Divider(color: Colors.white24, height: 32),
             _lguSectionHeader(
               icon: Icons.local_shipping_outlined,
-              title: 'Responder accounts',
-              subtitle: '${responderRows.length} accounts',
+              title: 'Response Units',
+              subtitle: '${responderRows.length} units',
             ),
             _buildLguUserSection(
               context: context,
               rows: responderRows,
-              emptyText: 'No responder accounts yet.',
+              emptyText: 'No response units yet.',
             ),
             const SizedBox(height: 16),
             TextButton.icon(
@@ -300,6 +301,7 @@ class AccountCenterScreen extends StatelessWidget {
         'email': raw['email']?.toString(),
         'isGuest': raw['isGuest'] == true,
         'approvedByLgu': raw['approvedByLgu'] == true,
+        'responseUnitStatus': raw['responseUnitStatus']?.toString(),
         'bannedByLgu': raw['bannedByLgu'] == true,
         'banReason': raw['banReason']?.toString(),
         'createdAt': created,
@@ -315,7 +317,8 @@ class AccountCenterScreen extends StatelessWidget {
           'name': unit.callSign,
           'email': null,
           'isGuest': false,
-          'approvedByLgu': true,
+          'approvedByLgu': false,
+          'responseUnitStatus': null,
           'createdAt': DateTime.fromMillisecondsSinceEpoch(0),
           'isNew': false,
         };
@@ -626,228 +629,146 @@ class AccountCenterScreen extends StatelessWidget {
         ),
         children: [
           ...rows.take(80).map((u) {
-
             final name = u['name']?.toString() ?? 'Unknown';
-
             final id = u['id']?.toString() ?? '';
-
             final role = u['role']?.toString() ?? '';
-
             final email = u['email']?.toString();
-
             final isGuest = u['isGuest'] == true;
-
             final isNew = u['isNew'] == true;
-
-            final approved = u['approvedByLgu'] == true;
-
             final isResponder = role == 'responder';
-
+            final unitStatus = responseUnitStatusFromUser(u);
             return Container(
-
               margin: const EdgeInsets.only(bottom: 8),
-
               padding: const EdgeInsets.all(10),
-
               decoration: BoxDecoration(
-
                 color: Colors.white.withValues(alpha: 0.06),
-
                 borderRadius: BorderRadius.circular(10),
-
                 border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-
               ),
-
               child: Column(
-
                 crossAxisAlignment: CrossAxisAlignment.start,
-
                 children: [
-
                   Row(
-
                     children: [
-
                       Expanded(
-
                         child: Text(
-
                           name,
-
                           style: const TextStyle(
-
                             color: Colors.white,
-
                             fontWeight: FontWeight.w700,
-
                             fontSize: 13,
-
                           ),
-
                         ),
-
                       ),
-
                       if (isNew)
-
                         Container(
-
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-
                           decoration: BoxDecoration(
-
                             color: Colors.green.withValues(alpha: 0.25),
-
                             borderRadius: BorderRadius.circular(8),
-
                           ),
-
                           child: const Text(
-
                             'NEW',
-
                             style: TextStyle(color: Colors.greenAccent, fontSize: 10),
-
                           ),
-
                         ),
-
-                    ],
-
-                  ),
-
-                  const SizedBox(height: 3),
-
-                  Text(
-
-                    '$role${isGuest ? ' • guest' : ''}${role == 'responder' ? (approved ? ' • approved' : ' • pending') : ''}',
-
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-
-                  ),
-
-                  if (email != null && email.trim().isNotEmpty)
-
-                    Text(
-
-                      email,
-
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-
-                    ),
-
-                  Text(
-
-                    id,
-
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
-
-                  ),
-
-                  if (isResponder) ...[
-
-                    const SizedBox(height: 8),
-
-                    Row(
-
-                      children: [
-
-                        if (!approved)
-
-                          FilledButton.tonal(
-
-                            onPressed: () async {
-
-                              await context.read<RescueProvider>().setResponderApproval(
-
-                                    responderId: id,
-
-                                    approved: true,
-
-                                  );
-
-                              if (context.mounted) {
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-
-                                  SnackBar(
-
-                                    content: Text('$name approved by LGU.'),
-
-                                    backgroundColor: Colors.green,
-
-                                  ),
-
-                                );
-
-                              }
-
-                            },
-
-                            child: const Text('Approve'),
-
-                          )
-
-                        else
-
-                          OutlinedButton(
-
-                            onPressed: () async {
-
-                              await context.read<RescueProvider>().setResponderApproval(
-
-                                    responderId: id,
-
-                                    approved: false,
-
-                                  );
-
-                              if (context.mounted) {
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-
-                                  SnackBar(
-
-                                    content: Text('$name approval revoked.'),
-
-                                    backgroundColor: Colors.orange,
-
-                                  ),
-
-                                );
-
-                              }
-
-                            },
-
-                            child: const Text('Revoke'),
-
+                      if (isResponder) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: _responseUnitStatusColor(unitStatus).withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(8),
                           ),
-
+                          child: Text(
+                            unitStatus.label.toUpperCase(),
+                            style: TextStyle(
+                              color: _responseUnitStatusColor(unitStatus),
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
                       ],
-
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '$role${isGuest ? ' • guest' : ''}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  if (email != null && email.trim().isNotEmpty)
+                    Text(
+                      email,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
-
+                  Text(
+                    id,
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                  if (isResponder) ...[
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<ResponseUnitStatus>(
+                      value: unitStatus,
+                      dropdownColor: const Color(0xFF1B3A5C),
+                      decoration: const InputDecoration(
+                        labelText: 'Status',
+                        isDense: true,
+                      ),
+                      items: [
+                        for (final s in ResponseUnitStatus.values)
+                          DropdownMenuItem(
+                            value: s,
+                            child: Text(s.label),
+                          ),
+                      ],
+                      onChanged: (next) {
+                        if (next == null) return;
+                        _setResponseUnitStatus(context, id, next, name: name);
+                      },
+                    ),
                   ],
-
                 ],
-
               ),
-
             );
-
           }),
-
         ],
-
       ),
-
     );
-
   }
 
+  Color _responseUnitStatusColor(ResponseUnitStatus status) {
+    switch (status) {
+      case ResponseUnitStatus.inService:
+        return Colors.greenAccent;
+      case ResponseUnitStatus.outOfService:
+        return Colors.orangeAccent;
+      case ResponseUnitStatus.underMaintenance:
+        return Colors.amberAccent;
+      case ResponseUnitStatus.disabled:
+        return Colors.redAccent;
+    }
+  }
 
+  Future<void> _setResponseUnitStatus(
+    BuildContext context,
+    String responderId,
+    ResponseUnitStatus status, {
+    String? name,
+  }) async {
+    try {
+      await context.read<RescueProvider>().setResponseUnitStatus(
+            responderId: responderId,
+            status: status,
+            name: name,
+          );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceFirst('Bad state: ', ''))),
+        );
+      }
+    }
+  }
 
   Widget _card({
 

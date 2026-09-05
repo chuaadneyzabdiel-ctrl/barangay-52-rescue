@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../models/map_layer_models.dart';
 import '../../models/rescue_models.dart';
+import '../../models/response_unit_status.dart';
 import '../../map/barangay_coverage.dart';
 import '../../map/rescue_map_tiles.dart';
 import '../../providers/rescue_provider.dart';
@@ -23,6 +24,7 @@ import '../../widgets/sos_chat_panel.dart';
 import '../../widgets/sos_scene_photo.dart';
 import '../../widgets/lgu_responder_chat_panel.dart';
 import 'account_center_screen.dart';
+import 'emergency_unit_dialogs.dart';
 import '../role_selection_screen.dart';
 
 /// LGU Command Center web dashboard for monitoring all rescue assets,
@@ -597,7 +599,9 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       ),
       children: [
         const RescueMapTileLayer(),
-        ...BarangayCoverage.mapLayers(),
+        ...BarangayCoverage.mapLayers(
+          barangayId: provider.assignedBarangayId,
+        ),
         ...MapLayerType.values
             .where((type) => type != MapLayerType.hazardZones)
             .expand((type) {
@@ -671,30 +675,33 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                   ),
                 ),
               ),
-            ...provider.rescueUnits.map((unit) => Marker(
-                  point: unit.position,
-                  width: 44,
-                  height: 44,
-                  child: Tooltip(
-                    message:
-                        '${unit.callSign}\n${_unitTypeLabel(unit.type)} • ${_statusLabel(unit.status)}',
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: unit.isAvailable
-                            ? Colors.green
-                            : Colors.orange,
-                        shape: BoxShape.circle,
-                        border:
-                            Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: Icon(
-                        _unitIcon(unit.type),
-                        color: Colors.white,
-                        size: 20,
+            ...provider.unitsForDisplay.map((unit) {
+              final online = provider.isUnitOnline(unit.id);
+              return Marker(
+                point: unit.position,
+                width: 44,
+                height: 44,
+                child: Tooltip(
+                  message:
+                      '${unit.callSign}\n${_unitTypeLabel(unit.type)} • ${_unitCommandStatus(provider, unit, online)}',
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: _unitReadinessColor(provider, unit, online),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: online ? Colors.white : Colors.white54,
+                        width: 2,
                       ),
                     ),
+                    child: Icon(
+                      _unitIcon(unit.type),
+                      color: Colors.white,
+                      size: 20,
+                    ),
                   ),
-                )),
+                ),
+              );
+            }),
             ...provider.activeSosRequests.map((sos) => Marker(
                   point: sos.location,
                   width: 44,
@@ -745,7 +752,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       builder: (context, provider, _) {
         final units = provider.unitsForDisplay;
         final available = units
-            .where((u) => provider.isUnitOnline(u.id) && u.isAvailable)
+            .where((u) =>
+                provider.isUnitOnline(u.id) &&
+                u.isAvailable &&
+                provider.canResponseUnitTakeSos(u.id))
             .length;
         final enRoute = units
             .where((u) =>
@@ -1078,7 +1088,9 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 final units = provider.unitsForDisplay;
                 final available = units
                     .where((u) =>
-                        provider.isUnitOnline(u.id) && u.isAvailable)
+                        provider.isUnitOnline(u.id) &&
+                        u.isAvailable &&
+                        provider.canResponseUnitTakeSos(u.id))
                     .length;
                 final enRoute = units
                     .where((u) =>
@@ -1207,16 +1219,37 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                         ],
                       ),
                     ),
-                    const Padding(
-                      padding: EdgeInsets.only(left: 4, bottom: 8),
-                      child: Text(
-                        'RESCUE UNITS',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1.5,
-                        ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, bottom: 8),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'RESCUE UNITS',
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.5,
+                              ),
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: () => promptAddEmergencyUnit(context),
+                            icon: const Icon(
+                              Icons.add,
+                              size: 16,
+                              color: Colors.white70,
+                            ),
+                            label: const Text(
+                              'Add',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     Padding(
@@ -1229,11 +1262,15 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                           _StatusDot(label: 'En Route', color: Colors.blue),
                           _StatusDot(
                               label: 'On Scene / Busy', color: Colors.orange),
+                          _StatusDot(
+                              label: 'Maintenance / Out of service',
+                              color: Colors.amber),
                           _StatusDot(label: 'Offline', color: Colors.grey),
                         ],
                       ),
                     ),
-                    ...provider.unitsForDisplay.map((u) => _buildUnitTile(u, provider.isUnitOnline(u.id))),
+                    ...provider.unitsForDisplay
+                        .map((u) => _buildUnitTile(provider, u)),
                   ],
                 );
               },
@@ -1495,28 +1532,31 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     );
   }
 
-  Widget _buildUnitTile(RescueUnit unit, bool isOnline) {
+  Widget _buildUnitTile(RescueProvider provider, RescueUnit unit) {
+    final isOnline = provider.isUnitOnline(unit.id);
+    final color = _unitReadinessColor(provider, unit, isOnline);
     return ListTile(
       dense: true,
       leading: Icon(
         _unitIcon(unit.type),
-        color: isOnline
-            ? (unit.isAvailable ? Colors.green : Colors.orange)
-            : Colors.grey,
+        color: color,
         size: 22,
       ),
       title: Text(unit.callSign,
           style: const TextStyle(color: Colors.white, fontSize: 13)),
       subtitle: Text(
-        isOnline ? _statusLabel(unit.status) : 'OFFLINE',
+        _unitCommandStatus(provider, unit, isOnline),
         style: TextStyle(
-          color: isOnline
-              ? (unit.isAvailable ? Colors.green.shade300 : Colors.orange.shade300)
-              : Colors.grey,
+          color: color,
           fontSize: 11,
         ),
       ),
-      onTap: isOnline ? () => _mapController.move(unit.position, 15) : null,
+      trailing: IconButton(
+        tooltip: 'Delete unit',
+        icon: const Icon(Icons.delete_outline, color: Colors.white38, size: 18),
+        onPressed: () => promptDeleteEmergencyUnit(context, unit),
+      ),
+      onTap: () => _mapController.move(unit.position, 15),
     );
   }
 
@@ -2709,6 +2749,42 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       UnitType.policeUnit => 'Police',
       UnitType.rescue => 'Barangay Tanod',
     };
+  }
+
+  Color _unitReadinessColor(
+    RescueProvider provider,
+    RescueUnit unit,
+    bool isOnline,
+  ) {
+    final readiness = provider.responseUnitStatusForUnit(unit.id);
+    if (!readiness.canTakeSos) {
+      switch (readiness) {
+        case ResponseUnitStatus.underMaintenance:
+          return Colors.amber;
+        case ResponseUnitStatus.disabled:
+          return Colors.redAccent;
+        case ResponseUnitStatus.outOfService:
+        case ResponseUnitStatus.inService:
+          return Colors.orangeAccent;
+      }
+    }
+    if (!isOnline) return Colors.grey;
+    if (unit.status == UnitStatus.enRoute) return Colors.blue;
+    if (unit.isAvailable) return Colors.green;
+    return Colors.orange;
+  }
+
+  String _unitCommandStatus(
+    RescueProvider provider,
+    RescueUnit unit,
+    bool isOnline,
+  ) {
+    final readiness = provider.responseUnitStatusForUnit(unit.id);
+    if (!readiness.canTakeSos) {
+      final label = readiness.label.toUpperCase();
+      return isOnline ? label : '$label • OFFLINE';
+    }
+    return isOnline ? _statusLabel(unit.status) : 'OFFLINE';
   }
 
   String _statusLabel(UnitStatus status) {

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/barangay.dart';
 import '../providers/rescue_provider.dart';
 import 'dashboard/lgu_dashboard_screen.dart';
 
@@ -119,19 +118,19 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          'BARANGAY COMMAND CENTER',
+                          'CALOOCAN CITY\nINTEGRATED RESCUE OPERATIONS',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.96),
-                            fontSize: 22,
+                            fontSize: 20,
                             fontWeight: FontWeight.w900,
-                            letterSpacing: 2,
-                            height: 1.2,
+                            letterSpacing: 1.4,
+                            height: 1.25,
                           ),
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Sign in with your assigned barangay account',
+                          'Sign in with your assigned account',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.grey[400],
@@ -193,14 +192,6 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
                                     ),
                                   )
                                 : const Text('Sign in'),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Demo: $kDemoLgu52Username / $kDemoLgu52Password',
-                          style: TextStyle(
-                            color: Colors.grey[500],
-                            fontSize: 12,
                           ),
                         ),
                       ],

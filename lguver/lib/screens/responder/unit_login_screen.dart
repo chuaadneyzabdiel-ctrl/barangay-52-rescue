@@ -66,7 +66,7 @@ class _UnitLoginScreenState extends State<UnitLoginScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0D1B2A),
       appBar: AppBar(
-        title: const Text('Unit Login'),
+        title: const Text('Response Unit Login'),
         backgroundColor: const Color(0xFF1B3A5C),
         foregroundColor: Colors.white,
       ),
@@ -81,7 +81,7 @@ class _UnitLoginScreenState extends State<UnitLoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const Text(
-                    'Login using LGU-provided unit credentials.',
+                    'Sign in with LGU response unit credentials.',
                     style: TextStyle(color: Colors.white70),
                   ),
                   const SizedBox(height: 16),

@@ -8,6 +8,7 @@ import '../../map/rescue_map_tiles.dart';
 import '../../widgets/map_layers_sheet.dart';
 import '../../widgets/rescue_map_tile_layer.dart';
 import '../../models/rescue_models.dart';
+import '../../models/response_unit_status.dart';
 import '../../providers/rescue_provider.dart';
 import '../../utils/geo_utils.dart';
 import '../../services/local_notification_service.dart';
@@ -28,7 +29,7 @@ class DispatchScreen extends StatefulWidget {
 class _DispatchScreenState extends State<DispatchScreen> {
   final MapController _mapController = MapController();
   bool _isAccepting = false;
-  StreamSubscription<bool>? _approvalSub;
+  StreamSubscription<ResponseUnitStatus>? _approvalSub;
   bool _revokedHandled = false;
 
   @override
@@ -62,7 +63,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
           if (!ok && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Responder account pending LGU approval.'),
+                content: Text('This unit is not In service yet.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -73,15 +74,19 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
       _approvalSub?.cancel();
       _approvalSub = provider.firebaseSync
-          .watchResponderApproval(widget.unitId)
-          .listen((approved) async {
-        if (!approved && mounted && !_revokedHandled) {
+          .watchResponseUnitStatus(widget.unitId)
+          .listen((status) async {
+        if (status == ResponseUnitStatus.disabled &&
+            mounted &&
+            !_revokedHandled) {
           _revokedHandled = true;
           await provider.responderLogout(widget.unitId);
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('LGU revoked this responder. You have been logged out.'),
+              content: Text(
+                'This response unit is disabled. You have been logged out.',
+              ),
               backgroundColor: Colors.orange,
             ),
           );
@@ -137,7 +142,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
           if (!ok && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Responder account pending LGU approval.'),
+                content: Text('This unit is not In service yet.'),
                 backgroundColor: Colors.orange,
               ),
             );
@@ -219,7 +224,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Responder account pending LGU approval.'),
+              content: Text('This unit is not In service yet.'),
               backgroundColor: Colors.orange,
             ),
           );
