@@ -4,6 +4,8 @@ Manages **barangays** and **LGU accounts** in Firebase Realtime Database. It doe
 
 Binds to [http://127.0.0.1:8788](http://127.0.0.1:8788) only.
 
+Walkthrough for seed accounts, activating 53–55, isolation, and mutual aid: [EXPERIMENTAL.md](../../EXPERIMENTAL.md).
+
 ## Start
 
 Double-click **Barangay Admin.lnk** in the repo root, or **start.bat** in this folder. Keep the console window open while you use it.
@@ -22,7 +24,7 @@ Use **Seed missing 52–55 + brgy52**. Existing rows are left alone.
 |---------|----------|----------|
 | `brgy52` | `Brgy52Admin1` | 52 (active) |
 
-Barangays 53–55 are created inactive until you check **Active**.
+Barangays 53–55 are created inactive until you check **Active**. Create their LGU accounts here (example demo passwords are listed in [EXPERIMENTAL.md](../../EXPERIMENTAL.md)); do not put those passwords in the Flutter apps.
 
 ## What it writes
 
