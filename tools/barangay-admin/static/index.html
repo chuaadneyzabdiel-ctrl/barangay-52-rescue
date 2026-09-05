@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Barangay Admin</title>
+  <style>
+    :root {
+      --bg: #0d1b2a;
+      --panel: #152238;
+      --card: #1b3a5c;
+      --text: #f4f7fb;
+      --muted: #9aa8b8;
+      --accent: #4ea1ff;
+      --danger: #e85d5d;
+      --ok: #3ddc84;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at top, #1b3a5c 0%, var(--bg) 42%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 48px; }
+    h1 { margin: 0 0 6px; }
+    .sub { color: var(--muted); margin-bottom: 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: rgba(21, 34, 56, 0.92);
+      border: 1px solid #2b4a72;
+      border-radius: 14px;
+      padding: 16px;
+    }
+    label { display: block; margin: 10px 0 6px; font-weight: 600; }
+    input, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #3d5d82;
+      background: #0d1b2a;
+      color: var(--text);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #2b4a72; }
+    button {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid #4d7aaa;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      margin: 4px 4px 0 0;
+    }
+    button.primary { background: #2f6fbd; font-weight: 700; }
+    button.danger { border-color: var(--danger); color: #ffd0d0; }
+    .ok { color: var(--ok); min-height: 20px; }
+    .err { color: #ffb4b4; min-height: 20px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .check { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+    .check input { width: auto; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Barangay Admin</h1>
+    <p class="sub">Localhost tool for Firebase <code>barangays</code> and <code>lgu_accounts</code>. Does not edit Flutter apps or wipe SOS data.</p>
+    <p>
+      <button class="primary" id="seed">Seed missing 52–55 + brgy52</button>
+      <button id="reload">Reload</button>
+    </p>
+    <p class="ok" id="status"></p>
+    <p class="err" id="error"></p>
+    <div class="grid">
+      <section class="card">
+        <h2>Barangays</h2>
+        <table>
+          <thead><tr><th>ID</th><th>Name</th><th>Active</th><th></th></tr></thead>
+          <tbody id="barangayRows"></tbody>
+        </table>
+        <h3>Save barangay</h3>
+        <label>ID</label>
+        <input id="bId" placeholder="52" />
+        <label>Name</label>
+        <input id="bName" placeholder="Barangay 52" />
+        <label>Neighbors (comma-separated)</label>
+        <input id="bNeighbors" placeholder="53,54,55" />
+        <label>Map center lat</label>
+        <input id="bLat" placeholder="14.6470319" />
+        <label>Map center lng</label>
+        <input id="bLng" placeholder="120.9768745" />
+        <label class="check"><input id="bActive" type="checkbox" /> Active (citizens can register)</label>
+        <p>
+          <button class="primary" id="saveBarangay">Save barangay</button>
+        </p>
+      </section>
+      <section class="card">
+        <h2>LGU accounts</h2>
+        <table>
+          <thead><tr><th>Username</th><th>Barangay</th><th>Active</th><th></th></tr></thead>
+          <tbody id="accountRows"></tbody>
+        </table>
+        <h3>Save account</h3>
+        <label>Username</label>
+        <input id="aUser" placeholder="brgy52" />
+        <label>Barangay ID</label>
+        <input id="aBarangay" placeholder="52" />
+        <label>Password (leave blank to keep current)</label>
+        <input id="aPass" type="password" placeholder="Brgy52Admin1" />
+        <label class="check"><input id="aActive" type="checkbox" checked /> Active</label>
+        <p class="hint">Passwords are hashed like the LGU app (SHA-256 of salt::password). Plaintext is never stored.</p>
+        <p>
+          <button class="primary" id="saveAccount">Save account</button>
+        </p>
+      </section>
+    </div>
+  </main>
+  <script>
+    const statusEl = document.getElementById("status");
+    const errorEl = document.getElementById("error");
+
+    function setMsg(ok, err) {
+      statusEl.textContent = ok || "";
+      errorEl.textContent = err || "";
+    }
+
+    async function api(path, options) {
+      const res = await fetch(path, options);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function fillBarangay(row) {
+      document.getElementById("bId").value = row.id || "";
+      document.getElementById("bName").value = row.name || "";
+      document.getElementById("bNeighbors").value = (row.neighbors || []).join(",");
+      document.getElementById("bLat").value = row.mapCenter?.lat ?? "";
+      document.getElementById("bLng").value = row.mapCenter?.lng ?? "";
+      document.getElementById("bActive").checked = !!row.isActive;
+    }
+
+    function fillAccount(row) {
+      document.getElementById("aUser").value = row.username || "";
+      document.getElementById("aBarangay").value = row.barangayId || "";
+      document.getElementById("aPass").value = "";
+      document.getElementById("aActive").checked = !!row.isActive;
+    }
+
+    async function reload() {
+      setMsg("Loading…", "");
+      const [b, a] = await Promise.all([
+        api("/api/barangays"),
+        api("/api/accounts"),
+      ]);
+      const bBody = document.getElementById("barangayRows");
+      bBody.innerHTML = "";
+      for (const row of b.barangays) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${row.id}</td><td>${row.name}</td><td>${row.isActive ? "yes" : "no"}</td>`;
+        const td = document.createElement("td");
+        const edit = document.createElement("button");
+        edit.textContent = "Edit";
+        edit.onclick = () => fillBarangay(row);
+        const del = document.createElement("button");
+        del.className = "danger";
+        del.textContent = "Delete";
+        del.onclick = async () => {
+          if (!confirm("Delete barangay " + row.id + "?")) return;
+          try {
+            await api("/api/barangays/" + encodeURIComponent(row.id), { method: "DELETE" });
+            await reload();
+          } catch (e) { setMsg("", e.message); }
+        };
+        td.append(edit, del);
+        tr.append(td);
+        bBody.append(tr);
+      }
+      const aBody = document.getElementById("accountRows");
+      aBody.innerHTML = "";
+      for (const row of a.accounts) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${row.username}</td><td>${row.barangayId}</td><td>${row.isActive ? "yes" : "no"}</td>`;
+        const td = document.createElement("td");
+        const edit = document.createElement("button");
+        edit.textContent = "Edit";
+        edit.onclick = () => fillAccount(row);
+        const del = document.createElement("button");
+        del.className = "danger";
+        del.textContent = "Delete";
+        del.onclick = async () => {
+          if (!confirm("Delete LGU account " + row.username + "?")) return;
+          try {
+            await api("/api/accounts/" + encodeURIComponent(row.username), { method: "DELETE" });
+            await reload();
+          } catch (e) { setMsg("", e.message); }
+        };
+        td.append(edit, del);
+        tr.append(td);
+        aBody.append(tr);
+      }
+      setMsg("Loaded " + b.barangays.length + " barangays and " + a.accounts.length + " LGU accounts.", "");
+    }
+
+    document.getElementById("reload").onclick = () => reload().catch((e) => setMsg("", e.message));
+    document.getElementById("seed").onclick = async () => {
+      try {
+        const data = await api("/api/seed", { method: "POST" });
+        setMsg("Seeded missing rows: " + JSON.stringify(data.created), "");
+        await reload();
+      } catch (e) { setMsg("", e.message); }
+    };
+    document.getElementById("saveBarangay").onclick = async () => {
+      const id = document.getElementById("bId").value.trim();
+      try {
+        await api("/api/barangays/" + encodeURIComponent(id), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id,
+            name: document.getElementById("bName").value,
+            neighbors: document.getElementById("bNeighbors").value,
+            isActive: document.getElementById("bActive").checked,
+            mapCenter: {
+              lat: Number(document.getElementById("bLat").value),
+              lng: Number(document.getElementById("bLng").value),
+            },
+          }),
+        });
+        await reload();
+      } catch (e) { setMsg("", e.message); }
+    };
+    document.getElementById("saveAccount").onclick = async () => {
+      const username = document.getElementById("aUser").value.trim();
+      try {
+        await api("/api/accounts/" + encodeURIComponent(username), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            barangayId: document.getElementById("aBarangay").value,
+            password: document.getElementById("aPass").value,
+            isActive: document.getElementById("aActive").checked,
+          }),
+        });
+        document.getElementById("aPass").value = "";
+        await reload();
+      } catch (e) { setMsg("", e.message); }
+    };
+    reload().catch((e) => setMsg("", e.message));
+  </script>
+</body>
+</html>
