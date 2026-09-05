@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:latlong2/latlong.dart';
+import '../models/barangay.dart';
 import '../models/rescue_models.dart';
 
 /// Real-time sync layer between all devices via Firebase Realtime Database.
@@ -29,6 +30,7 @@ class FirebaseSyncService {
     String? email,
     bool? isGuest,
     bool? approvedByLgu,
+    String? barangayId,
   }) async {
     final ref = _db.ref('users/$userId');
     final snap = await ref.get();
@@ -40,6 +42,7 @@ class FirebaseSyncService {
       if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
       if (isGuest != null) 'isGuest': isGuest,
       if (approvedByLgu != null) 'approvedByLgu': approvedByLgu,
+      'barangayId': normalizeBarangayId(barangayId),
       'updatedAt': now,
       'createdAt': (existing?['createdAt'] as num?)?.toInt() ?? now,
     });
@@ -442,6 +445,7 @@ class FirebaseSyncService {
       'status': unit.status.name,
       'assignedSOSId': unit.assignedSOSId,
       'stationId': unit.stationId,
+      'barangayId': normalizeBarangayId(unit.barangayId),
       'timestamp': ServerValue.timestamp,
     });
   }
@@ -482,6 +486,7 @@ class FirebaseSyncService {
             ),
             assignedSOSId: v['assignedSOSId'] as String?,
             stationId: v['stationId'] as String? ?? '',
+            barangayId: normalizeBarangayId(v['barangayId']?.toString()),
           ),
         );
       }
@@ -948,5 +953,33 @@ class FirebaseSyncService {
         return HazardZone.fromJson(v);
       }).toList();
     });
+  }
+
+  List<BarangayRecord> _parseBarangays(Object? raw) {
+    if (raw is! Map) return List<BarangayRecord>.from(kBuiltInBarangays);
+    final out = <BarangayRecord>[];
+    for (final e in raw.entries) {
+      final v = e.value;
+      if (v is! Map) continue;
+      out.add(BarangayRecord.fromJson(e.key.toString(), Map<dynamic, dynamic>.from(v)));
+    }
+    if (out.isEmpty) return List<BarangayRecord>.from(kBuiltInBarangays);
+    out.sort((a, b) => a.id.compareTo(b.id));
+    return out;
+  }
+
+  Stream<List<BarangayRecord>> watchBarangays() {
+    return _db.ref('barangays').onValue.map((event) {
+      return _parseBarangays(event.snapshot.value);
+    });
+  }
+
+  Future<List<BarangayRecord>> fetchBarangays() async {
+    try {
+      final snap = await _db.ref('barangays').get();
+      return _parseBarangays(snap.value);
+    } catch (_) {
+      return List<BarangayRecord>.from(kBuiltInBarangays);
+    }
   }
 }

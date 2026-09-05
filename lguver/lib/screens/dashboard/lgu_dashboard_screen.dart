@@ -23,6 +23,7 @@ import '../../widgets/sos_chat_panel.dart';
 import '../../widgets/sos_scene_photo.dart';
 import '../../widgets/lgu_responder_chat_panel.dart';
 import 'account_center_screen.dart';
+import '../role_selection_screen.dart';
 
 /// LGU Command Center web dashboard for monitoring all rescue assets,
 /// viewing active SOS requests, and manually tagging hazard zones.
@@ -291,7 +292,12 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
             role: 'lguAdmin',
             screen: 'lgu_dashboard',
           );
-      if (context.mounted) Navigator.of(context).pop();
+      await context.read<RescueProvider>().lguLogout();
+      if (context.mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(builder: (_) => const RoleSelectionScreen()),
+        );
+      }
     }
   }
 
@@ -321,7 +327,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('LGU Command Center'),
+                  Text('Barangay ${provider.assignedBarangayId} Command Center'),
                   Text(
                     err,
                     style: const TextStyle(
@@ -335,7 +341,9 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 ],
               );
             }
-            return const Text('LGU Command Center');
+            return Text(
+              'Barangay ${provider.assignedBarangayId} Command Center',
+            );
           },
         ),
         actions: [
@@ -1031,10 +1039,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 ),
               ],
             ),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                const Row(
                   children: [
                     Icon(Icons.emergency, color: Colors.white70, size: 22),
                     SizedBox(width: 10),
@@ -1049,10 +1057,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                     ),
                   ],
                 ),
-                SizedBox(height: 6),
+                const SizedBox(height: 6),
                 Text(
-                  'Command Center',
-                  style: TextStyle(
+                  'Barangay ${context.watch<RescueProvider>().assignedBarangayId} Command Center',
+                  style: const TextStyle(
                     color: Colors.white70,
                     fontSize: 13,
                     letterSpacing: 0.5,

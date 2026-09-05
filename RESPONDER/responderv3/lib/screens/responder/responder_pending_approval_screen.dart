@@ -67,6 +67,7 @@ class _ResponderPendingApprovalScreenState
       status: UnitStatus.idle,
       position: pos,
       stationId: widget.rosterUnit.stationId,
+      barangayId: widget.rosterUnit.barangayId,
     );
     provider.setCurrentResponderUnit(unit);
 

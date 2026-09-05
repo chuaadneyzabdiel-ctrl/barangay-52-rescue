@@ -113,6 +113,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
             status: UnitStatus.idle,
             position: pos,
             stationId: roster.stationId,
+            barangayId: roster.barangayId,
           );
           provider.setCurrentResponderUnit(unit);
           bool ok = false;
@@ -193,6 +194,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
             status: UnitStatus.enRoute,
             position: provider.currentPosition ?? roster.position,
             stationId: roster.stationId,
+            barangayId: roster.barangayId,
             assignedSOSId: sos.id,
           );
           provider.setCurrentResponderUnit(navUnit);
@@ -447,6 +449,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
         status: UnitStatus.enRoute,
         position: provider.currentPosition ?? roster.position,
         stationId: roster.stationId,
+        barangayId: roster.barangayId,
         assignedSOSId: sos.id,
       );
       provider.setCurrentResponderUnit(unit);

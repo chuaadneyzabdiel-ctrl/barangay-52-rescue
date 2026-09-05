@@ -177,6 +177,7 @@ class UnitSelectionScreen extends StatelessWidget {
       status: UnitStatus.idle,
       position: position,
       stationId: rosterUnit.stationId,
+      barangayId: rosterUnit.barangayId,
     );
     provider.setCurrentResponderUnit(unit);
     if (!context.mounted) return;

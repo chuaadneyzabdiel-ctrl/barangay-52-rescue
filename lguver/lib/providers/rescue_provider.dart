@@ -5,6 +5,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/osrm_navigation_models.dart';
+import '../models/barangay.dart';
 import '../models/rescue_models.dart';
 import '../services/a_star_routing_service.dart';
 import '../services/dynamic_relocation_service.dart';
@@ -24,6 +25,8 @@ const _kPersistedRoleKey = 'persisted_user_role';
 const _kResponderSessionUnitIdKey = 'responder_session_unit_id';
 const _kResponderUnitLoginIdKey = 'responder_unit_login_id';
 const _kResponderSessionIdKey = 'responder_session_id';
+const _kLguUsernameKey = 'lgu_username';
+const _kLguBarangayIdKey = 'lgu_assigned_barangay_id';
 
 enum UserRole { citizen, responder, lguAdmin }
 enum CitizenAccessMode { guest, registered }
@@ -91,6 +94,10 @@ class RescueProvider extends ChangeNotifier {
   String? _currentResponderUnitLoginId;
   String? _currentResponderSessionId;
   String? _currentResponderSessionUnitId;
+  String? _assignedBarangayId;
+  String? _lguUsername;
+  List<BarangayRecord> _barangays = List<BarangayRecord>.from(kBuiltInBarangays);
+  StreamSubscription? _barangaysSub;
 
   // Location status for "turn on location" prompts
   LocationStatus? _locationStatus;
@@ -130,6 +137,12 @@ class RescueProvider extends ChangeNotifier {
   String? get lastFirebaseError => _lastFirebaseError;
   String? get currentResponderUnitLoginId => _currentResponderUnitLoginId;
   String? get currentResponderSessionId => _currentResponderSessionId;
+  String? get lguUsername => _lguUsername;
+  String get assignedBarangayId => normalizeBarangayId(_assignedBarangayId);
+  bool get isLguScoped =>
+      _currentRole == UserRole.lguAdmin &&
+      (_assignedBarangayId != null && _assignedBarangayId!.trim().isNotEmpty);
+  List<BarangayRecord> get barangays => List.unmodifiable(_barangays);
 
   RescueProvider({
     AStarRoutingService? routingService,
@@ -179,6 +192,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.ambulance,
       position: const LatLng(14.6544, 120.9840),
       stationId: 'station-south-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-2',
@@ -186,6 +200,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.fireTruck,
       position: const LatLng(14.7510, 121.0560),
       stationId: 'station-north-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-3',
@@ -193,6 +208,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.rescue,
       position: const LatLng(14.7350, 121.0350),
       stationId: 'station-north-2',
+      barangayId: kDefaultBarangayId,
     ),
   ];
 
@@ -276,10 +292,14 @@ class RescueProvider extends ChangeNotifier {
 
   /// Units for LGU display: roster merged with live data (roster unit shown as offline if not in Firebase).
   List<RescueUnit> get unitsForDisplay {
-    return _rescueUnitsRoster.map((roster) {
+    final merged = _rescueUnitsRoster.map((roster) {
       final live = _rescueUnits.where((u) => u.id == roster.id).firstOrNull;
       return live ?? roster;
     }).toList();
+    if (!isLguScoped) return merged;
+    return merged
+        .where((u) => normalizeBarangayId(u.barangayId) == assignedBarangayId)
+        .toList();
   }
 
   /// True if this roster unit is currently online (has live data in Firebase).
@@ -288,15 +308,38 @@ class RescueProvider extends ChangeNotifier {
 
   List<SOSRequest> get sosRequests => List.unmodifiable(_sosRequests);
   /// Only requests that should appear on the map (pending, dispatched, inProgress).
-  List<SOSRequest> get activeSosRequests =>
-      _sosRequests.where((r) => r.isActive).toList();
-  List<SOSRequest> get sosHistory => List.unmodifiable(_sosHistory);
+  List<SOSRequest> get activeSosRequests {
+    final list = _sosRequests.where((r) => r.isActive);
+    if (!isLguScoped) return list.toList();
+    return list.where((r) => r.isVisibleToBarangay(assignedBarangayId)).toList();
+  }
+
+  List<SOSRequest> get sosHistory {
+    if (!isLguScoped) return List.unmodifiable(_sosHistory);
+    return _sosHistory
+        .where((r) => r.isVisibleToBarangay(assignedBarangayId))
+        .toList();
+  }
   Map<String, StandbyPoint> get relocationSuggestions =>
       Map.unmodifiable(_relocationSuggestions);
   LocationService get locationService => _locationService;
   FirebaseSyncService get firebaseSync => _firebaseSync;
-  List<SOSRequest> get pendingRequests =>
-      _sosRequests.where((r) => r.status == SOSStatus.pending).toList();
+  List<SOSRequest> get pendingRequests {
+    final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
+    final unitBarangay = _responderUnitBarangayId;
+    if (unitBarangay == null) return pending.toList();
+    return pending.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+  }
+
+  String? get _responderUnitBarangayId {
+    final live = _currentResponderUnit;
+    if (live != null) return normalizeBarangayId(live.barangayId);
+    final sessionUnitId = _currentResponderSessionUnitId;
+    if (sessionUnitId == null || sessionUnitId.isEmpty) return null;
+    final roster =
+        _rescueUnitsRoster.where((u) => u.id == sessionUnitId).firstOrNull;
+    return roster == null ? null : normalizeBarangayId(roster.barangayId);
+  }
 
   // --- Role management & multi-user session (local persistence) ---
 
@@ -329,6 +372,113 @@ class RescueProvider extends ChangeNotifier {
       }
     } catch (_) {}
     _currentRole = role;
+    notifyListeners();
+  }
+
+  Future<void> ensureMultiBarangayFoundationSeeded() async {
+    await _firebaseSync.seedDefaultBarangaysIfMissing();
+    await _firebaseSync.seedDefaultLguAdminIfMissing();
+  }
+
+  Future<({String? username, String? barangayId})> readPersistedLguSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final username = prefs.getString(_kLguUsernameKey);
+      final barangayId = prefs.getString(_kLguBarangayIdKey);
+      return (username: username, barangayId: barangayId);
+    } catch (_) {
+      return (username: null, barangayId: null);
+    }
+  }
+
+  Future<void> _persistLguSession({
+    required String username,
+    required String barangayId,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_kPersistedRoleKey, UserRole.lguAdmin.name);
+      await prefs.setString(_kLguUsernameKey, username);
+      await prefs.setString(_kLguBarangayIdKey, barangayId);
+    } catch (_) {}
+  }
+
+  Future<void> hydrateLguSession({
+    required String username,
+    required String barangayId,
+  }) async {
+    await ensureMultiBarangayFoundationSeeded();
+    final clean = username.trim().toLowerCase();
+    final account = await _firebaseSync.getLguAccount(clean);
+    if (account == null) {
+      throw StateError('LGU account was not found.');
+    }
+    if (account['isActive'] != true) {
+      throw StateError('This LGU account is disabled.');
+    }
+    final assigned = normalizeBarangayId(account['barangayId']?.toString());
+    _lguUsername = clean;
+    _assignedBarangayId = assigned;
+    _currentRole = UserRole.lguAdmin;
+    await _persistLguSession(username: clean, barangayId: assigned);
+    notifyListeners();
+  }
+
+  Future<void> loginLgu({
+    required String username,
+    required String password,
+  }) async {
+    await ensureMultiBarangayFoundationSeeded();
+    final clean = username.trim().toLowerCase();
+    if (clean.isEmpty || password.isEmpty) {
+      throw StateError('Username and password are required.');
+    }
+    final account = await _firebaseSync.getLguAccount(clean);
+    if (account == null) {
+      throw StateError('Unknown LGU account.');
+    }
+    if (account['isActive'] != true) {
+      throw StateError('This LGU account is disabled.');
+    }
+    final hash = account['passwordHash']?.toString() ?? '';
+    final salt = account['passwordSalt']?.toString() ?? '';
+    final ok = PasswordUtils.verifyPassword(
+      password: password,
+      salt: salt,
+      expectedHash: hash,
+    );
+    if (!ok) {
+      throw StateError('Incorrect password.');
+    }
+    final assigned = normalizeBarangayId(account['barangayId']?.toString());
+    _lguUsername = clean;
+    _assignedBarangayId = assigned;
+    _currentRole = UserRole.lguAdmin;
+    await _persistLguSession(username: clean, barangayId: assigned);
+    await _firebaseSync.logAuditEvent(
+      action: 'LGU_LOGIN',
+      performedBy: clean,
+      targetId: assigned,
+      details: {'barangayId': assigned},
+    );
+    notifyListeners();
+  }
+
+  Future<void> lguLogout() async {
+    final user = _lguUsername;
+    final barangay = _assignedBarangayId;
+    if (user != null && user.isNotEmpty) {
+      await _firebaseSync.logAuditEvent(
+        action: 'LGU_LOGOUT',
+        performedBy: user,
+        targetId: barangay ?? kDefaultBarangayId,
+        details: {'barangayId': barangay ?? kDefaultBarangayId},
+      );
+    }
+    _lguUsername = null;
+    _assignedBarangayId = null;
+    await clearPersistedSessionKeys();
+    _currentRole = UserRole.citizen;
     notifyListeners();
   }
 
@@ -379,6 +529,8 @@ class RescueProvider extends ChangeNotifier {
       await prefs.remove(_kResponderSessionUnitIdKey);
       await prefs.remove(_kResponderUnitLoginIdKey);
       await prefs.remove(_kResponderSessionIdKey);
+      await prefs.remove(_kLguUsernameKey);
+      await prefs.remove(_kLguBarangayIdKey);
     } catch (_) {}
   }
 
@@ -444,13 +596,8 @@ class RescueProvider extends ChangeNotifier {
     _currentResponderUnitLoginId = null;
     _currentResponderSessionId = null;
     _currentResponderSessionUnitId = null;
-    _currentRole = UserRole.citizen;
-    notifyListeners();
-  }
-
-  /// Ends LGU session only (no unit to offline).
-  Future<void> lguLogout() async {
-    await clearPersistedSessionKeys();
+    _assignedBarangayId = null;
+    _lguUsername = null;
     _currentRole = UserRole.citizen;
     notifyListeners();
   }
@@ -549,6 +696,17 @@ class RescueProvider extends ChangeNotifier {
       },
     );
 
+    _barangaysSub = _firebaseSync.watchBarangays().listen(
+      (rows) {
+        _firebaseLogStreamFirstOk('watchBarangays');
+        _barangays = rows;
+        notifyListeners();
+      },
+      onError: (e, st) {
+        _firebaseLogStreamError('watchBarangays', e, st);
+      },
+    );
+
     _hazardSub = _firebaseSync.watchAllHazardZones().listen(
       (zones) {
         _firebaseLogStreamFirstOk('watchAllHazardZones');
@@ -584,6 +742,7 @@ class RescueProvider extends ChangeNotifier {
     _sosHistorySub?.cancel();
     _usersSub?.cancel();
     _unitAccountsSub?.cancel();
+    _barangaysSub?.cancel();
     _listenersStarted = false;
   }
 
@@ -1355,6 +1514,7 @@ class RescueProvider extends ChangeNotifier {
       preferredFacilityId: preferredFacilityId,
       preferredFacilityName: preferredFacilityName,
       preferredFacilityLocation: preferredFacilityLocation,
+      barangayId: kDefaultBarangayId,
     );
 
     await _firebaseSync.publishSOS(request);

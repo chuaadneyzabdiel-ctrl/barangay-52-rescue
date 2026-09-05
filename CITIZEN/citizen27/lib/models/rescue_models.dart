@@ -1,5 +1,7 @@
 import 'package:latlong2/latlong.dart';
 
+import 'barangay.dart';
+
 enum UnitType { ambulance, fireTruck, policeUnit, rescue }
 
 enum UnitStatus { idle, dispatched, enRoute, onScene, returning }
@@ -133,6 +135,7 @@ class RescueUnit {
   LatLng position;
   String? assignedSOSId;
   final String stationId;
+  final String barangayId;
 
   RescueUnit({
     required this.id,
@@ -142,6 +145,7 @@ class RescueUnit {
     required this.position,
     this.assignedSOSId,
     required this.stationId,
+    this.barangayId = kDefaultBarangayId,
   });
 
   bool get isAvailable => status == UnitStatus.idle;
@@ -155,6 +159,7 @@ class RescueUnit {
         'lng': position.longitude,
         'assignedSOSId': assignedSOSId,
         'stationId': stationId,
+        'barangayId': normalizeBarangayId(barangayId),
       };
 
   factory RescueUnit.fromJson(Map<String, dynamic> json) {
@@ -169,6 +174,7 @@ class RescueUnit {
       ),
       assignedSOSId: json['assignedSOSId'] as String?,
       stationId: json['stationId'] as String,
+      barangayId: normalizeBarangayId(json['barangayId']?.toString()),
     );
   }
 }
@@ -198,6 +204,10 @@ class SOSRequest {
   final String? callbackPhone;
   /// Optional scene photo (https URL or data:image JPEG). Never required.
   final String? scenePhotoUrl;
+  /// Home barangay that owns this SOS. Missing values are treated as "52".
+  final String barangayId;
+  /// Neighbor barangays that accepted mutual aid for this SOS.
+  List<String> assistingBarangayIds;
 
   SOSRequest({
     required this.id,
@@ -218,6 +228,8 @@ class SOSRequest {
     this.reportedForName,
     this.callbackPhone,
     this.scenePhotoUrl,
+    this.barangayId = kDefaultBarangayId,
+    this.assistingBarangayIds = const [],
   });
 
   bool get isProxyReport =>
@@ -228,6 +240,15 @@ class SOSRequest {
 
   bool get hasScenePhoto =>
       scenePhotoUrl != null && scenePhotoUrl!.trim().isNotEmpty;
+
+  bool isOwnedByBarangay(String id) =>
+      normalizeBarangayId(barangayId) == normalizeBarangayId(id);
+
+  bool isVisibleToBarangay(String id) {
+    final target = normalizeBarangayId(id);
+    if (isOwnedByBarangay(target)) return true;
+    return assistingBarangayIds.any((b) => normalizeBarangayId(b) == target);
+  }
 
   /// True if this request should appear on the active map.
   bool get isActive =>
@@ -265,6 +286,9 @@ class SOSRequest {
           'callbackPhone': callbackPhone!.trim(),
         if (scenePhotoUrl != null && scenePhotoUrl!.trim().isNotEmpty)
           'scenePhotoUrl': scenePhotoUrl!.trim(),
+        'barangayId': normalizeBarangayId(barangayId),
+        if (assistingBarangayIds.isNotEmpty)
+          'assistingBarangayIds': assistingBarangayIds,
       };
 
   factory SOSRequest.fromJson(Map<String, dynamic> json) {
@@ -332,8 +356,21 @@ class SOSRequest {
       reportedForName: json['reportedForName'] as String?,
       callbackPhone: json['callbackPhone'] as String?,
       scenePhotoUrl: json['scenePhotoUrl'] as String?,
+      barangayId: normalizeBarangayId(json['barangayId']?.toString()),
+      assistingBarangayIds: _stringList(json['assistingBarangayIds']),
     );
   }
+}
+
+List<String> _stringList(dynamic raw) {
+  final out = <String>[];
+  if (raw is List) {
+    for (final e in raw) {
+      final id = e?.toString().trim() ?? '';
+      if (id.isNotEmpty && !out.contains(id)) out.add(id);
+    }
+  }
+  return out;
 }
 
 class StandbyPoint {

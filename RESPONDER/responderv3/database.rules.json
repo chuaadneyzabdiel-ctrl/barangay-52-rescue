@@ -6,6 +6,13 @@
     "dispatch": { ".read": true, ".write": true },
     "hazard_zones": { ".read": true, ".write": true },
     "sos_chats": { ".read": true, ".write": true },
-    "audit_log": { ".read": true, ".write": true }
+    "audit_log": { ".read": true, ".write": true },
+    "users": { ".read": true, ".write": true },
+    "barangays": { ".read": true, ".write": true },
+    "lgu_accounts": { ".read": true, ".write": true },
+    "mutual_aid_requests": { ".read": true, ".write": true },
+    "unit_accounts": { ".read": true, ".write": true },
+    "unit_sessions": { ".read": true, ".write": true },
+    "lgu_responder_chats": { ".read": true, ".write": true }
   }
 }

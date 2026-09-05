@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/osrm_navigation_models.dart';
+import '../models/barangay.dart';
 import '../models/rescue_models.dart';
 import '../services/a_star_routing_service.dart';
 import '../services/dynamic_relocation_service.dart';
@@ -78,6 +79,7 @@ class RescueProvider extends ChangeNotifier {
   String? _citizenAddress;
   String? _citizenEmergencyContactName;
   String? _citizenEmergencyContactPhone;
+  String _citizenBarangayId = kDefaultBarangayId;
   int _guestSosCountToday = 0;
   DateTime? _guestLastSosAt;
   DateTime? _guestCounterDate;
@@ -109,6 +111,7 @@ class RescueProvider extends ChangeNotifier {
   String? get citizenAddress => _citizenAddress;
   String? get citizenEmergencyContactName => _citizenEmergencyContactName;
   String? get citizenEmergencyContactPhone => _citizenEmergencyContactPhone;
+  String get citizenBarangayId => normalizeBarangayId(_citizenBarangayId);
   int get guestSosCountToday => _guestSosCountToday;
   DateTime? get guestLastSosAt => _guestLastSosAt;
   int get guestStrikes => _guestStrikes;
@@ -165,6 +168,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.ambulance,
       position: const LatLng(14.6544, 120.9840),
       stationId: 'station-south-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-2',
@@ -172,6 +176,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.fireTruck,
       position: const LatLng(14.7510, 121.0560),
       stationId: 'station-north-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-3',
@@ -179,6 +184,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.rescue,
       position: const LatLng(14.7350, 121.0350),
       stationId: 'station-north-2',
+      barangayId: kDefaultBarangayId,
     ),
   ];
 
@@ -210,8 +216,18 @@ class RescueProvider extends ChangeNotifier {
       Map.unmodifiable(_relocationSuggestions);
   LocationService get locationService => _locationService;
   FirebaseSyncService get firebaseSync => _firebaseSync;
-  List<SOSRequest> get pendingRequests =>
-      _sosRequests.where((r) => r.status == SOSStatus.pending).toList();
+  List<SOSRequest> get pendingRequests {
+    final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
+    final unitBarangay = _responderUnitBarangayId;
+    if (unitBarangay == null) return pending.toList();
+    return pending.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+  }
+
+  String? get _responderUnitBarangayId {
+    final live = _currentResponderUnit;
+    if (live != null) return normalizeBarangayId(live.barangayId);
+    return null;
+  }
 
   // --- Role management & multi-user session (local persistence) ---
 
@@ -286,6 +302,7 @@ class RescueProvider extends ChangeNotifier {
       await prefs.remove(_kCitizenAddressKey);
       await prefs.remove(_kCitizenEmergencyContactNameKey);
       await prefs.remove(_kCitizenEmergencyContactPhoneKey);
+      await prefs.remove(_kCitizenBarangayIdKey);
       await prefs.remove(_kGuestSosCountTodayKey);
       await prefs.remove(_kGuestLastSosAtKey);
       await prefs.remove(_kGuestCounterDateKey);
@@ -303,6 +320,7 @@ class RescueProvider extends ChangeNotifier {
     _citizenAddress = null;
     _citizenEmergencyContactName = null;
     _citizenEmergencyContactPhone = null;
+    _citizenBarangayId = kDefaultBarangayId;
     _guestSosCountToday = 0;
     _guestLastSosAt = null;
     _guestCounterDate = null;
@@ -518,6 +536,7 @@ class RescueProvider extends ChangeNotifier {
       'citizen_emergency_contact_name';
   static const _kCitizenEmergencyContactPhoneKey =
       'citizen_emergency_contact_phone';
+  static const _kCitizenBarangayIdKey = 'citizen_barangay_id';
   static const _kGuestSosCountTodayKey = 'guest_sos_count_today';
   static const _kGuestLastSosAtKey = 'guest_last_sos_at_ms';
   static const _kGuestCounterDateKey = 'guest_counter_date_yyyy_mm_dd';
@@ -546,6 +565,9 @@ class RescueProvider extends ChangeNotifier {
           prefs.getString(_kCitizenEmergencyContactNameKey);
       _citizenEmergencyContactPhone =
           prefs.getString(_kCitizenEmergencyContactPhoneKey);
+      _citizenBarangayId = normalizeBarangayId(
+        prefs.getString(_kCitizenBarangayIdKey),
+      );
       _guestSosCountToday = prefs.getInt(_kGuestSosCountTodayKey) ?? 0;
       _guestStrikes = prefs.getInt(_kGuestStrikesKey) ?? 0;
       _guestIsBanned = prefs.getBool(_kGuestIsBannedKey) ?? false;
@@ -635,6 +657,7 @@ class RescueProvider extends ChangeNotifier {
         _citizenAddress = null;
         _citizenEmergencyContactName = null;
         _citizenEmergencyContactPhone = null;
+        _citizenBarangayId = kDefaultBarangayId;
       }
       if (_citizenId != null) {
         await prefs.setString(_kCitizenIdKey, _citizenId!);
@@ -647,6 +670,7 @@ class RescueProvider extends ChangeNotifier {
         name: _citizenName!,
         email: _citizenEmail,
         isGuest: _citizenAccessMode == CitizenAccessMode.guest,
+        barangayId: citizenBarangayId,
       );
     }
     notifyListeners();
@@ -661,6 +685,7 @@ class RescueProvider extends ChangeNotifier {
     required String address,
     String? emergencyContactName,
     String? emergencyContactPhone,
+    String? barangayId,
     bool syncRemote = true,
   }) async {
     _citizenAccessMode = CitizenAccessMode.registered;
@@ -669,6 +694,7 @@ class RescueProvider extends ChangeNotifier {
     _citizenEmail = email.trim();
     _citizenPhone = phone.trim();
     _citizenAddress = address.trim();
+    _citizenBarangayId = normalizeBarangayId(barangayId);
     _citizenEmergencyContactName = emergencyContactName?.trim().isEmpty == true
         ? null
         : emergencyContactName?.trim();
@@ -685,6 +711,7 @@ class RescueProvider extends ChangeNotifier {
       await prefs.setString(_kCitizenEmailKey, _citizenEmail!);
       await prefs.setString(_kCitizenPhoneKey, _citizenPhone!);
       await prefs.setString(_kCitizenAddressKey, _citizenAddress!);
+      await prefs.setString(_kCitizenBarangayIdKey, _citizenBarangayId);
       if (_citizenEmergencyContactName != null) {
         await prefs.setString(
           _kCitizenEmergencyContactNameKey,
@@ -712,6 +739,7 @@ class RescueProvider extends ChangeNotifier {
         address: _citizenAddress!,
         emergencyContactName: _citizenEmergencyContactName,
         emergencyContactPhone: _citizenEmergencyContactPhone,
+        barangayId: _citizenBarangayId,
       );
     }
 
@@ -740,6 +768,7 @@ class RescueProvider extends ChangeNotifier {
       address: address,
       emergencyContactName: row['emergencyContactName']?.toString(),
       emergencyContactPhone: row['emergencyContactPhone']?.toString(),
+      barangayId: row['barangayId']?.toString(),
       syncRemote: false,
     );
     return true;
@@ -1124,6 +1153,7 @@ class RescueProvider extends ChangeNotifier {
       scenePhotoUrl: (scenePhotoUrl != null && scenePhotoUrl.trim().isNotEmpty)
           ? scenePhotoUrl.trim()
           : null,
+      barangayId: citizenBarangayId,
     );
 
     await _firebaseSync.publishSOS(request);

@@ -3,7 +3,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:latlong2/latlong.dart';
 import '../firebase_options.dart';
+import '../models/barangay.dart';
 import '../models/rescue_models.dart';
+import '../utils/password_utils.dart';
 
 /// Real-time sync layer between all devices via Firebase Realtime Database.
 ///
@@ -43,6 +45,7 @@ class FirebaseSyncService {
     String? email,
     bool? isGuest,
     bool? approvedByLgu,
+    String? barangayId,
   }) async {
     final ref = _db.ref('users/$userId');
     final snap = await ref.get();
@@ -54,6 +57,7 @@ class FirebaseSyncService {
       if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
       if (isGuest != null) 'isGuest': isGuest,
       if (approvedByLgu != null) 'approvedByLgu': approvedByLgu,
+      'barangayId': normalizeBarangayId(barangayId),
       'updatedAt': now,
       'createdAt': (existing?['createdAt'] as num?)?.toInt() ?? now,
     });
@@ -456,6 +460,7 @@ class FirebaseSyncService {
       'status': unit.status.name,
       'assignedSOSId': unit.assignedSOSId,
       'stationId': unit.stationId,
+      'barangayId': normalizeBarangayId(unit.barangayId),
       'timestamp': ServerValue.timestamp,
     });
   }
@@ -496,6 +501,7 @@ class FirebaseSyncService {
             ),
             assignedSOSId: v['assignedSOSId'] as String?,
             stationId: v['stationId'] as String? ?? '',
+            barangayId: normalizeBarangayId(v['barangayId']?.toString()),
           ),
         );
       }
@@ -1000,5 +1006,99 @@ class FirebaseSyncService {
         return HazardZone.fromJson(v);
       }).toList();
     });
+  }
+
+  List<BarangayRecord> _parseBarangays(Object? raw) {
+    if (raw is! Map) return List<BarangayRecord>.from(kBuiltInBarangays);
+    final out = <BarangayRecord>[];
+    for (final e in raw.entries) {
+      final v = e.value;
+      if (v is! Map) continue;
+      out.add(BarangayRecord.fromJson(e.key.toString(), Map<dynamic, dynamic>.from(v)));
+    }
+    if (out.isEmpty) return List<BarangayRecord>.from(kBuiltInBarangays);
+    out.sort((a, b) => a.id.compareTo(b.id));
+    return out;
+  }
+
+  Stream<List<BarangayRecord>> watchBarangays() {
+    return _db.ref('barangays').onValue.map((event) {
+      return _parseBarangays(event.snapshot.value);
+    });
+  }
+
+  Future<List<BarangayRecord>> fetchBarangays() async {
+    try {
+      final snap = await _db.ref('barangays').get();
+      return _parseBarangays(snap.value);
+    } catch (_) {
+      return List<BarangayRecord>.from(kBuiltInBarangays);
+    }
+  }
+
+  Future<void> seedDefaultBarangaysIfMissing() async {
+    for (final barangay in kBuiltInBarangays) {
+      final ref = _db.ref('barangays/${barangay.id}');
+      final snap = await ref.get();
+      if (snap.exists) continue;
+      await ref.set(barangay.toJson());
+    }
+  }
+
+  Future<void> seedDefaultLguAdminIfMissing() async {
+    final ref = _db.ref('lgu_accounts/$kDemoLgu52Username');
+    final snap = await ref.get();
+    if (snap.exists) return;
+    final salt = PasswordUtils.generateSalt();
+    final hash = PasswordUtils.hashPassword(
+      password: kDemoLgu52Password,
+      salt: salt,
+    );
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await ref.set({
+      'username': kDemoLgu52Username,
+      'barangayId': kDefaultBarangayId,
+      'isActive': true,
+      'passwordHash': hash,
+      'passwordSalt': salt,
+      'createdAt': now,
+      'updatedAt': now,
+    });
+  }
+
+  Future<Map<String, dynamic>?> getLguAccount(String username) async {
+    final clean = username.trim().toLowerCase();
+    if (clean.isEmpty) return null;
+    final snap = await _db.ref('lgu_accounts/$clean').get();
+    final raw = snap.value;
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    map['username'] = clean;
+    return map;
+  }
+
+  Stream<List<Map<String, dynamic>>> watchLguAccounts() {
+    return _db.ref('lgu_accounts').onValue.map((event) {
+      final data = event.snapshot.value as Map?;
+      if (data == null) return <Map<String, dynamic>>[];
+      final rows = <Map<String, dynamic>>[];
+      for (final e in data.entries) {
+        final raw = e.value;
+        if (raw is! Map) continue;
+        final v = Map<String, dynamic>.from(raw);
+        v['username'] = e.key.toString();
+        rows.add(v);
+      }
+      rows.sort((a, b) =>
+          (a['username']?.toString() ?? '').compareTo(b['username']?.toString() ?? ''));
+      return rows;
+    });
+  }
+
+  Future<void> updateSosAssistingBarangays(
+    String sosId,
+    List<String> barangayIds,
+  ) async {
+    await _db.ref('active_sos/$sosId/assistingBarangayIds').set(barangayIds);
   }
 }

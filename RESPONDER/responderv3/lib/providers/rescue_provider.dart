@@ -4,6 +4,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/osrm_navigation_models.dart';
+import '../models/barangay.dart';
 import '../models/rescue_models.dart';
 import '../services/a_star_routing_service.dart';
 import '../services/dynamic_relocation_service.dart';
@@ -168,6 +169,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.ambulance,
       position: const LatLng(14.6544, 120.9840),
       stationId: 'station-south-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-2',
@@ -175,6 +177,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.fireTruck,
       position: const LatLng(14.7510, 121.0560),
       stationId: 'station-north-1',
+      barangayId: kDefaultBarangayId,
     ),
     RescueUnit(
       id: 'unit-3',
@@ -182,6 +185,7 @@ class RescueProvider extends ChangeNotifier {
       type: UnitType.rescue,
       position: const LatLng(14.7350, 121.0350),
       stationId: 'station-north-2',
+      barangayId: kDefaultBarangayId,
     ),
   ];
 
@@ -284,8 +288,22 @@ class RescueProvider extends ChangeNotifier {
       Map.unmodifiable(_relocationSuggestions);
   LocationService get locationService => _locationService;
   FirebaseSyncService get firebaseSync => _firebaseSync;
-  List<SOSRequest> get pendingRequests =>
-      _sosRequests.where((r) => r.status == SOSStatus.pending).toList();
+  List<SOSRequest> get pendingRequests {
+    final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
+    final unitBarangay = _responderUnitBarangayId;
+    if (unitBarangay == null) return pending.toList();
+    return pending.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+  }
+
+  String? get _responderUnitBarangayId {
+    final live = _currentResponderUnit;
+    if (live != null) return normalizeBarangayId(live.barangayId);
+    final sessionUnitId = _currentResponderSessionUnitId;
+    if (sessionUnitId == null || sessionUnitId.isEmpty) return null;
+    final roster =
+        _rescueUnitsRoster.where((u) => u.id == sessionUnitId).firstOrNull;
+    return roster == null ? null : normalizeBarangayId(roster.barangayId);
+  }
 
   // --- Role management & multi-user session (local persistence) ---
 
@@ -1299,6 +1317,7 @@ class RescueProvider extends ChangeNotifier {
       preferredFacilityId: preferredFacilityId,
       preferredFacilityName: preferredFacilityName,
       preferredFacilityLocation: preferredFacilityLocation,
+      barangayId: kDefaultBarangayId,
     );
 
     await _firebaseSync.publishSOS(request);

@@ -99,6 +99,28 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
           );
           break;
         case UserRole.lguAdmin:
+          final session = await provider.readPersistedLguSession();
+          final username = session.username;
+          final barangayId = session.barangayId;
+          if (username == null ||
+              username.isEmpty ||
+              barangayId == null ||
+              barangayId.isEmpty) {
+            await provider.clearPersistedSessionKeys();
+            await _goToRoleSelection();
+            return;
+          }
+          try {
+            await provider.hydrateLguSession(
+              username: username,
+              barangayId: barangayId,
+            );
+          } catch (_) {
+            await provider.clearPersistedSessionKeys();
+            await _goToRoleSelection();
+            return;
+          }
+          if (!mounted) return;
           Navigator.of(context).pushReplacement(
             MaterialPageRoute<void>(builder: (_) => const LGUDashboardScreen()),
           );

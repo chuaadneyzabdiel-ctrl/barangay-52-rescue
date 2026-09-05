@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/rescue_provider.dart';
 import '../../services/auth_service.dart';
+import '../../models/barangay.dart';
+import '../../widgets/home_barangay_picker.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -21,6 +23,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final _addressController = TextEditingController();
   final _emergencyNameController = TextEditingController();
   final _emergencyPhoneController = TextEditingController();
+  String? _barangayId;
   bool _loading = false;
 
   @override
@@ -67,6 +70,7 @@ class _SignupScreenState extends State<SignupScreen> {
         emergencyContactPhone: _emergencyPhoneController.text.trim().isEmpty
             ? null
             : _emergencyPhoneController.text,
+        barangayId: _barangayId,
       );
       await provider.persistSessionRole(UserRole.citizen);
 
@@ -179,6 +183,12 @@ class _SignupScreenState extends State<SignupScreen> {
                     validator: (v) => (v ?? '').trim().isEmpty
                         ? 'Complete address is required.'
                         : null,
+                  ),
+                  const SizedBox(height: 12),
+                  HomeBarangayPicker(
+                    value: _barangayId,
+                    catalog: kBuiltInBarangays,
+                    onChanged: (id) => setState(() => _barangayId = id),
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
