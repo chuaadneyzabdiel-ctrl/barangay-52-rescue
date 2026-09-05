@@ -593,14 +593,16 @@ class _SOSScreenState extends State<SOSScreen>
 
     final target =
         _usePinnedLocation ? _pinnedLocation : provider.currentPosition;
-    if (target != null && !BarangayCoverage.contains(target)) {
+    final homeBarangayId = provider.citizenBarangayId;
+    if (target != null &&
+        !BarangayCoverage.contains(target, barangayId: homeBarangayId)) {
       if (!mounted) return;
       final proceed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Outside Barangay 52'),
-          content: const Text(
-            'This location is outside Barangay 52 coverage. Send the SOS anyway?',
+          title: Text('Outside Barangay $homeBarangayId'),
+          content: Text(
+            'This location is outside Barangay $homeBarangayId coverage. Send the SOS anyway?',
           ),
           actions: [
             TextButton(
@@ -1764,11 +1766,15 @@ class _SOSScreenState extends State<SOSScreen>
                     '${shown.longitude.toStringAsFixed(5)}',
                     style: TextStyle(color: Colors.grey[600], fontSize: 13),
                   ),
-                if (shown != null && !BarangayCoverage.contains(shown))
+                if (shown != null &&
+                    !BarangayCoverage.contains(
+                      shown,
+                      barangayId: provider.citizenBarangayId,
+                    ))
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Text(
-                      'This location is outside Barangay 52.',
+                      'This location is outside Barangay ${provider.citizenBarangayId}.',
                       style: TextStyle(
                         color: Colors.orange.shade800,
                         fontSize: 12,

@@ -1041,8 +1041,24 @@ class FirebaseSyncService {
     for (final barangay in kBuiltInBarangays) {
       final ref = _db.ref('barangays/${barangay.id}');
       final snap = await ref.get();
-      if (snap.exists) continue;
-      await ref.set(barangay.toJson());
+      if (!snap.exists) {
+        await ref.set(barangay.toJson());
+        continue;
+      }
+      final raw = snap.value;
+      if (raw is! Map) continue;
+      final current = BarangayRecord.fromJson(barangay.id, Map<dynamic, dynamic>.from(raw));
+      final neighbors = [...current.neighbors];
+      for (final n in barangay.neighbors) {
+        if (!neighbors.contains(n)) neighbors.add(n);
+      }
+      await ref.update({
+        'neighbors': neighbors,
+        'mapCenter': {
+          'lat': barangay.mapCenter.latitude,
+          'lng': barangay.mapCenter.longitude,
+        },
+      });
     }
   }
 

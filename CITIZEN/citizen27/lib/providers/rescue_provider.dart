@@ -214,6 +214,14 @@ class RescueProvider extends ChangeNotifier {
       stationId: 'station-55',
       barangayId: '55',
     ),
+    RescueUnit(
+      id: 'unit-56-amb',
+      callSign: 'AMBULANCE-56',
+      type: UnitType.ambulance,
+      position: const LatLng(14.6482187, 120.9768730),
+      stationId: 'station-56',
+      barangayId: '56',
+    ),
   ];
 
   /// When a responder selects a unit, we keep it so GPS upload can use it before Firebase stream delivers.

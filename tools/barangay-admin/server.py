@@ -29,34 +29,43 @@ DEFAULT_BARANGAYS = [
         "id": "52",
         "name": "Barangay 52",
         "isActive": True,
-        "neighbors": ["53", "54", "55"],
+        "neighbors": ["53", "56"],
         "mapCenter": {"lat": 14.6470319, "lng": 120.9768745},
     },
     {
         "id": "53",
         "name": "Barangay 53",
         "isActive": False,
-        "neighbors": ["52", "54"],
-        "mapCenter": {"lat": 14.6482, "lng": 120.9781},
+        "neighbors": ["52", "54", "55", "56"],
+        "mapCenter": {"lat": 14.6459011, "lng": 120.9783944},
     },
     {
         "id": "54",
         "name": "Barangay 54",
         "isActive": False,
-        "neighbors": ["52", "53", "55"],
-        "mapCenter": {"lat": 14.6459, "lng": 120.9756},
+        "neighbors": ["53", "55"],
+        "mapCenter": {"lat": 14.6467237, "lng": 120.9817668},
     },
     {
         "id": "55",
         "name": "Barangay 55",
         "isActive": False,
-        "neighbors": ["52", "54"],
-        "mapCenter": {"lat": 14.6491, "lng": 120.9762},
+        "neighbors": ["53", "54"],
+        "mapCenter": {"lat": 14.6450598, "lng": 120.9812413},
+    },
+    {
+        "id": "56",
+        "name": "Barangay 56",
+        "isActive": False,
+        "neighbors": ["52", "53"],
+        "mapCenter": {"lat": 14.6482187, "lng": 120.9768730},
     },
 ]
 
-DEMO_LGU_USER = "brgy52"
-DEMO_LGU_PASSWORD = "Brgy52Admin1"
+DEMO_LGU_ACCOUNTS = [
+    ("brgy52", "Brgy52Admin1", "52"),
+    ("brgy56", "Brgy56Admin1", "56"),
+]
 
 
 def _json(data) -> bytes:
@@ -127,36 +136,50 @@ def public_account(username: str, row: dict) -> dict:
 
 
 def seed_defaults() -> dict:
-    created = {"barangays": [], "accounts": []}
+    created = {"barangays": [], "accounts": [], "mergedNeighbors": []}
     existing_barangays = rtdb("barangays") or {}
     if not isinstance(existing_barangays, dict):
         existing_barangays = {}
     for barangay in DEFAULT_BARANGAYS:
-        if barangay["id"] in existing_barangays:
+        current = existing_barangays.get(barangay["id"])
+        if not isinstance(current, dict):
+            rtdb(f"barangays/{barangay['id']}", "PUT", barangay)
+            created["barangays"].append(barangay["id"])
             continue
-        rtdb(f"barangays/{barangay['id']}", "PUT", barangay)
-        created["barangays"].append(barangay["id"])
+        neighbors = parse_neighbors(current.get("neighbors"))
+        added = False
+        for neighbor in barangay["neighbors"]:
+            if neighbor not in neighbors:
+                neighbors.append(neighbor)
+                added = True
+        patch = {"mapCenter": barangay["mapCenter"]}
+        if added:
+            patch["neighbors"] = neighbors
+            created["mergedNeighbors"].append(barangay["id"])
+        rtdb(f"barangays/{barangay['id']}", "PATCH", patch)
 
     existing_accounts = rtdb("lgu_accounts") or {}
     if not isinstance(existing_accounts, dict):
         existing_accounts = {}
-    if DEMO_LGU_USER not in existing_accounts:
-        now = int(__import__("time").time() * 1000)
+    now = int(__import__("time").time() * 1000)
+    for username, password, barangay_id in DEMO_LGU_ACCOUNTS:
+        if username in existing_accounts:
+            continue
         salt = new_salt()
         rtdb(
-            f"lgu_accounts/{DEMO_LGU_USER}",
+            f"lgu_accounts/{username}",
             "PUT",
             {
-                "username": DEMO_LGU_USER,
-                "barangayId": "52",
+                "username": username,
+                "barangayId": barangay_id,
                 "isActive": True,
-                "passwordHash": hash_password(DEMO_LGU_PASSWORD, salt),
+                "passwordHash": hash_password(password, salt),
                 "passwordSalt": salt,
                 "createdAt": now,
                 "updatedAt": now,
             },
         )
-        created["accounts"].append(DEMO_LGU_USER)
+        created["accounts"].append(username)
     return created
 
 
@@ -293,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/accounts/"):
                 username = path.split("/api/accounts/", 1)[1].strip().lower()
-                if username == DEMO_LGU_USER:
+                if username == "brgy52":
                     raise ValueError("The demo brgy52 account cannot be deleted.")
                 rtdb(f"lgu_accounts/{username}", "DELETE")
                 self._send(200, _json({"ok": True}))

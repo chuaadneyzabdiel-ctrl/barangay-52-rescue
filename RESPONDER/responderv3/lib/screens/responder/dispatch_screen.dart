@@ -1446,15 +1446,18 @@ class _DispatchCard extends StatelessWidget {
                 ],
               ),
             ],
-            if (!BarangayCoverage.contains(request.location)) ...[
+            if (!BarangayCoverage.contains(
+              request.location,
+              barangayId: request.barangayId,
+            )) ...[
               const SizedBox(height: 8),
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.warning_amber, color: Colors.orangeAccent, size: 18),
-                  SizedBox(width: 8),
+                  const Icon(Icons.warning_amber, color: Colors.orangeAccent, size: 18),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Outside Barangay 52 coverage',
+                      BarangayCoverage.outsideCoverageLabel(request.barangayId),
                       style: TextStyle(
                         color: Colors.orangeAccent,
                         fontSize: 13,

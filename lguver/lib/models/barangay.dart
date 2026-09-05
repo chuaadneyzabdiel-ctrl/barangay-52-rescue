@@ -69,34 +69,42 @@ class BarangayRecord {
 }
 
 /// Built-in catalog used before RTDB is seeded / reachable.
-/// 52 is active; 53–55 stay coming-soon until an admin activates them.
+/// 52 is active; 53–56 stay coming-soon until an admin activates them.
+/// Neighbors follow OSM adjacency (shared boundary vertices).
 const List<BarangayRecord> kBuiltInBarangays = [
   BarangayRecord(
     id: '52',
     name: 'Barangay 52',
     isActive: true,
-    neighbors: ['53', '54', '55'],
+    neighbors: ['53', '56'],
     mapCenter: LatLng(14.6470319, 120.9768745),
   ),
   BarangayRecord(
     id: '53',
     name: 'Barangay 53',
     isActive: false,
-    neighbors: ['52', '54'],
-    mapCenter: LatLng(14.6482, 120.9781),
+    neighbors: ['52', '54', '55', '56'],
+    mapCenter: LatLng(14.6459011, 120.9783944),
   ),
   BarangayRecord(
     id: '54',
     name: 'Barangay 54',
     isActive: false,
-    neighbors: ['52', '53', '55'],
-    mapCenter: LatLng(14.6459, 120.9756),
+    neighbors: ['53', '55'],
+    mapCenter: LatLng(14.6467237, 120.9817668),
   ),
   BarangayRecord(
     id: '55',
     name: 'Barangay 55',
     isActive: false,
-    neighbors: ['52', '54'],
-    mapCenter: LatLng(14.6491, 120.9762),
+    neighbors: ['53', '54'],
+    mapCenter: LatLng(14.6450598, 120.9812413),
+  ),
+  BarangayRecord(
+    id: '56',
+    name: 'Barangay 56',
+    isActive: false,
+    neighbors: ['52', '53'],
+    mapCenter: LatLng(14.6482187, 120.9768730),
   ),
 ];

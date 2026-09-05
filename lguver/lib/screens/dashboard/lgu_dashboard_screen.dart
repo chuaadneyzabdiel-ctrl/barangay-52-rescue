@@ -46,8 +46,6 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
   int _mapFlex = 3;
   bool _mapFullScreen = false;
 
-  static const _caloocanCenter = BarangayCoverage.center;
-
   final FlutterTts _tts = FlutterTts();
   late final AnimationController _pulse;
   RescueProvider? _provider;
@@ -592,7 +590,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: _caloocanCenter,
+        initialCenter: BarangayCoverage.centerFor(provider.assignedBarangayId),
         initialZoom: 15,
         interactionOptions: kRescueMapInteractions,
         keepAlive: true,
@@ -2186,10 +2184,13 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                     ),
                   ),
                 ],
-                if (!BarangayCoverage.contains(sos.location)) ...[
+                if (!BarangayCoverage.contains(
+                  sos.location,
+                  barangayId: sos.barangayId,
+                )) ...[
                   const SizedBox(height: 6),
-                  const Text(
-                    'Outside Barangay 52 coverage',
+                  Text(
+                    BarangayCoverage.outsideCoverageLabel(sos.barangayId),
                     style: TextStyle(
                       color: Colors.orangeAccent,
                       fontSize: 13,
