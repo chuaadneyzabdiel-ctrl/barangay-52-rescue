@@ -189,6 +189,15 @@ class SOSRequest {
   final String? preferredFacilityId;
   final String? preferredFacilityName;
   final LatLng? preferredFacilityLocation;
+  /// True when the citizen dropped a pin (or reported for someone else).
+  /// Live GPS of the reporter must not overwrite [location].
+  final bool locationIsPinned;
+  /// Optional name of the person in need when this SOS is a proxy report.
+  final String? reportedForName;
+  /// Optional callback number from the sender (guest or registered). Never required.
+  final String? callbackPhone;
+  /// Optional scene photo (https URL or data:image JPEG). Never required.
+  final String? scenePhotoUrl;
 
   SOSRequest({
     required this.id,
@@ -205,7 +214,20 @@ class SOSRequest {
     this.preferredFacilityId,
     this.preferredFacilityName,
     this.preferredFacilityLocation,
+    this.locationIsPinned = false,
+    this.reportedForName,
+    this.callbackPhone,
+    this.scenePhotoUrl,
   });
+
+  bool get isProxyReport =>
+      reportedForName != null && reportedForName!.trim().isNotEmpty;
+
+  bool get hasCallbackPhone =>
+      callbackPhone != null && callbackPhone!.trim().isNotEmpty;
+
+  bool get hasScenePhoto =>
+      scenePhotoUrl != null && scenePhotoUrl!.trim().isNotEmpty;
 
   /// True if this request should appear on the active map.
   bool get isActive =>
@@ -236,6 +258,13 @@ class SOSRequest {
           'preferredFacilityLat': preferredFacilityLocation!.latitude,
         if (preferredFacilityLocation != null)
           'preferredFacilityLng': preferredFacilityLocation!.longitude,
+        if (locationIsPinned) 'locationIsPinned': true,
+        if (reportedForName != null && reportedForName!.trim().isNotEmpty)
+          'reportedForName': reportedForName!.trim(),
+        if (callbackPhone != null && callbackPhone!.trim().isNotEmpty)
+          'callbackPhone': callbackPhone!.trim(),
+        if (scenePhotoUrl != null && scenePhotoUrl!.trim().isNotEmpty)
+          'scenePhotoUrl': scenePhotoUrl!.trim(),
       };
 
   factory SOSRequest.fromJson(Map<String, dynamic> json) {
@@ -299,6 +328,10 @@ class SOSRequest {
       preferredFacilityName: json['preferredFacilityName'] as String?,
       preferredFacilityLocation:
           (prefLat != null && prefLng != null) ? LatLng(prefLat, prefLng) : null,
+      locationIsPinned: json['locationIsPinned'] == true,
+      reportedForName: json['reportedForName'] as String?,
+      callbackPhone: json['callbackPhone'] as String?,
+      scenePhotoUrl: json['scenePhotoUrl'] as String?,
     );
   }
 }

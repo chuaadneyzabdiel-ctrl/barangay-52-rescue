@@ -1370,11 +1370,14 @@ class RescueProvider extends ChangeNotifier {
   }
 
   /// Continuously update the citizen's location on their active SOS.
-  void startCitizenLocationUpdates(String sosId) {
+  /// When [pinLocation] is true, GPS still updates locally but does not move the SOS pin.
+  void startCitizenLocationUpdates(String sosId, {bool pinLocation = false}) {
     _locationSub?.cancel();
     _locationSub = _locationService.positionStream.listen((pos) {
       _currentPosition = pos;
-      _firebaseSync.updateSOSLocation(sosId, pos);
+      if (!pinLocation) {
+        _firebaseSync.updateSOSLocation(sosId, pos);
+      }
       notifyListeners();
     });
   }

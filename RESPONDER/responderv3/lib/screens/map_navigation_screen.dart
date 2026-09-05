@@ -5,6 +5,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../map/barangay_coverage.dart';
 import '../map/rescue_map_tiles.dart';
 import '../models/map_layer_models.dart';
 import '../models/rescue_models.dart';
@@ -12,6 +13,7 @@ import '../providers/map_theme_provider.dart';
 import '../providers/rescue_provider.dart';
 import '../services/map_layer_data_service.dart';
 import '../services/navigation_eta_calculator.dart';
+import '../utils/facility_search_utils.dart';
 import '../utils/geo_utils.dart';
 import '../utils/navigation_guidance.dart';
 import '../utils/route_geo_utils.dart';
@@ -486,7 +488,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
 
   List<MapLayerPOI> _filterFacilities(String query) {
     final qNorm = _normalizeSearchToken(query);
-    return _medicalFacilities.where((f) {
+    final rows = _medicalFacilities.where((f) {
       final type = f.facilityType ?? _facilityTypeOf(f);
       final typeOk = _facilityTypeFilter == 'all' || type == _facilityTypeFilter;
       if (!typeOk) return false;
@@ -496,7 +498,42 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
       }
       if (_facilityEmergencyOnly && f.emergencyCapable != true) return false;
       return _matchesFacilityQuery(f, qNorm);
-    }).toList();
+    });
+    return FacilitySearchUtils.sortedByDistance(
+      widget.sosRequest.location,
+      rows,
+    );
+  }
+
+  List<MapLayerPOI> _hospitalCandidates() {
+    final hospitals = MapLayerDataService.getLayerData(MapLayerType.hospitals);
+    if (hospitals.isNotEmpty) return hospitals;
+    return _medicalFacilities
+        .where((f) => (f.facilityType ?? _facilityTypeOf(f)) == 'hospital')
+        .toList();
+  }
+
+  Future<void> _suggestNearbyHospital() async {
+    final scene = widget.sosRequest.location;
+    final nearest = FacilitySearchUtils.nearestTo(scene, _hospitalCandidates());
+    if (nearest == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hospitals found.')),
+      );
+      return;
+    }
+    final dist = FacilitySearchUtils.formatDistanceKm(
+      GeoUtils.haversineKm(scene, nearest.position),
+    );
+    await _routeToFacility(nearest, announce: false);
+    if (!mounted) return;
+    final afterPickup = _isAmbulance && !_pickupConfirmed
+        ? ' Route switches after pickup.'
+        : '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Nearby: ${nearest.name} • $dist from scene.$afterPickup')),
+    );
   }
 
   String _facilityOpenLabel(MapLayerPOI poi) {
@@ -506,20 +543,22 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
     return 'Status unknown';
   }
 
-  Future<void> _routeToFacility(MapLayerPOI facility) async {
+  Future<void> _routeToFacility(MapLayerPOI facility, {bool announce = true}) async {
     setState(() {
       _selectedFacility = facility;
     });
     if (_isAmbulance && !_pickupConfirmed) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Planned destination set: ${facility.name}. Route switches after pickup.',
+      if (announce) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Planned destination set: ${facility.name}. Route switches after pickup.',
+            ),
+            duration: const Duration(seconds: 2),
           ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+        );
+      }
       return;
     }
     await _beginFacilityTransport(facility);
@@ -734,17 +773,27 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Row(
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 0,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        TextButton.icon(
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            await _suggestNearbyHospital();
+                          },
+                          icon: const Icon(Icons.near_me, size: 18),
+                          label: const Text('Suggest nearby'),
+                        ),
                         TextButton.icon(
                           onPressed: () async {
                             Navigator.pop(ctx);
                             await _routeToNearestFacility();
                           },
-                          icon: const Icon(Icons.near_me, size: 18),
-                          label: const Text('Nearest'),
+                          icon: const Icon(Icons.my_location, size: 18),
+                          label: const Text('Nearest to me'),
                         ),
-                        const Spacer(),
                         Text(
                           '${rows.length} result(s)',
                           style: const TextStyle(color: Colors.white54, fontSize: 12),
@@ -761,7 +810,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                             leading: const Icon(Icons.local_hospital, color: Colors.redAccent),
                             title: Text(it.name, style: const TextStyle(color: Colors.white)),
                             subtitle: Text(
-                              '${it.city ?? ''} • ${it.facilityType ?? _facilityTypeOf(it)} • ${it.ownership ?? 'private'}\n'
+                              '${FacilitySearchUtils.formatDistanceKm(GeoUtils.haversineKm(widget.sosRequest.location, it.position))} from scene • ${it.city ?? ''} • ${it.facilityType ?? _facilityTypeOf(it)} • ${it.ownership ?? 'private'}\n'
                               '${_facilityOpenLabel(it)}${it.phone != null ? ' • ${it.phone}' : ''}',
                               style: const TextStyle(color: Colors.white70),
                             ),
@@ -1161,6 +1210,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                 ),
                 children: [
                   mapTheme.buildTileLayer(),
+                  ...BarangayCoverage.mapLayers(),
 
                   // Hazard zone polygons
                   PolygonLayer(
@@ -1564,6 +1614,8 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                                     senderDisplayName:
                                         widget.responderUnit.callSign,
                                     completedAt: widget.sosRequest.completedAt,
+                                    otherPartyPhoneNumber:
+                                        widget.sosRequest.callbackPhone,
                                   ),
                                 ),
                               ],
@@ -1828,6 +1880,26 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                             ],
                           ),
                         ),
+                        if (_isAmbulance && !_sosEnded)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Wrap(
+                              spacing: 4,
+                              runSpacing: 0,
+                              children: [
+                                TextButton.icon(
+                                  onPressed: _suggestNearbyHospital,
+                                  icon: const Icon(Icons.near_me, size: 16),
+                                  label: const Text('Suggest nearby'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: _openFacilitySearchSheet,
+                                  icon: const Icon(Icons.search, size: 16),
+                                  label: const Text('Choose'),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (_isAmbulance &&
                             !_routingToFacility &&
                             _selectedFacility != null)

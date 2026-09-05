@@ -1066,9 +1066,19 @@ class RescueProvider extends ChangeNotifier {
     String? preferredFacilityId,
     String? preferredFacilityName,
     LatLng? preferredFacilityLocation,
+    LatLng? incidentLocation,
+    bool locationIsPinned = false,
+    String? reportedForName,
+    String? callbackPhone,
+    String? scenePhotoUrl,
   }) async {
-    if (_currentPosition == null) {
-      throw StateError('Location not available. Cannot create SOS.');
+    final loc = incidentLocation ?? _currentPosition;
+    if (loc == null) {
+      throw StateError(
+        locationIsPinned
+            ? 'Drop a pin on the map to set the incident location.'
+            : 'Location not available. Cannot create SOS.',
+      );
     }
 
     if (_citizenAccessMode == CitizenAccessMode.guest) {
@@ -1094,9 +1104,11 @@ class RescueProvider extends ChangeNotifier {
       }
     }
 
+    final proxyName = reportedForName?.trim();
+    final phone = callbackPhone?.trim();
     final request = SOSRequest(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      location: _currentPosition!,
+      location: loc,
       citizenId: citizenId,
       citizenName: citizenName,
       message: message,
@@ -1106,6 +1118,12 @@ class RescueProvider extends ChangeNotifier {
       preferredFacilityId: preferredFacilityId,
       preferredFacilityName: preferredFacilityName,
       preferredFacilityLocation: preferredFacilityLocation,
+      locationIsPinned: locationIsPinned,
+      reportedForName: (proxyName != null && proxyName.isNotEmpty) ? proxyName : null,
+      callbackPhone: (phone != null && phone.isNotEmpty) ? phone : null,
+      scenePhotoUrl: (scenePhotoUrl != null && scenePhotoUrl.trim().isNotEmpty)
+          ? scenePhotoUrl.trim()
+          : null,
     );
 
     await _firebaseSync.publishSOS(request);
@@ -1121,11 +1139,15 @@ class RescueProvider extends ChangeNotifier {
   }
 
   /// Continuously update the citizen's location on their active SOS.
-  void startCitizenLocationUpdates(String sosId) {
+  /// When [pinLocation] is true, GPS still updates the reporter marker locally
+  /// but must not move the incident pin in Firebase.
+  void startCitizenLocationUpdates(String sosId, {bool pinLocation = false}) {
     _locationSub?.cancel();
     _locationSub = _locationService.positionStream.listen((pos) {
       _currentPosition = pos;
-      _firebaseSync.updateSOSLocation(sosId, pos);
+      if (!pinLocation) {
+        _firebaseSync.updateSOSLocation(sosId, pos);
+      }
       notifyListeners();
     });
   }

@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../map/barangay_coverage.dart';
 import '../../map/rescue_map_tiles.dart';
 import '../../models/map_layer_models.dart';
 import '../../models/rescue_models.dart';
@@ -18,6 +20,7 @@ import '../../services/map_layer_data_service.dart';
 import '../../utils/geo_utils.dart';
 import '../../utils/facility_search_utils.dart';
 import '../../widgets/sos_chat_panel.dart';
+import '../../widgets/sos_scene_photo.dart';
 import '../dashboard/account_center_screen.dart';
 
 enum _CitizenLiveStatusType { enRoute, nearby, transporting, arrived }
@@ -32,6 +35,7 @@ class SOSScreen extends StatefulWidget {
 class _SOSScreenState extends State<SOSScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const String _kQueuedSosKey = 'queued_sos_request';
+  static const String _kCallbackPhoneKey = 'guest_callback_phone';
   bool _sending = false;
   SOSType _selectedSosType = SOSType.medical;
   SOSRequest? _lastRequest;
@@ -74,8 +78,16 @@ class _SOSScreenState extends State<SOSScreen>
   String? _dispatchRoutingTo;
   final MapController _userMapController = MapController();
   final TextEditingController _detailsController = TextEditingController();
+  final TextEditingController _reportedForController = TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
+  String? _scenePhotoUrl;
+  bool _pickingPhoto = false;
   List<MapLayerPOI> _citizenMedicalFacilities = const [];
   MapLayerPOI? _preferredMedicalFacility;
+  bool _usePinnedLocation = false;
+  bool _forSomeoneElse = false;
+  LatLng? _pinnedLocation;
+  bool _locationWatchStarted = false;
 
   @override
   void initState() {
@@ -96,6 +108,9 @@ class _SOSScreenState extends State<SOSScreen>
       await provider.refreshLocationStatus();
       provider.initLocation();
       if (!mounted) return;
+      await provider.loadCitizenProfile();
+      if (!mounted) return;
+      await _prefillCallbackPhone(provider);
       await provider.loadActiveSOS();
       if (!mounted) return;
       final id = provider.activeSosId;
@@ -103,6 +118,22 @@ class _SOSScreenState extends State<SOSScreen>
       // Try to send any SOS that was queued while offline.
       await _trySendQueuedSOS();
     });
+  }
+
+  Future<void> _prefillCallbackPhone(RescueProvider provider) async {
+    if (_phoneController.text.trim().isNotEmpty) return;
+    final profile = provider.citizenPhone?.trim() ?? '';
+    if (profile.isNotEmpty) {
+      _phoneController.text = profile;
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_kCallbackPhoneKey)?.trim() ?? '';
+      if (saved.isNotEmpty && mounted) {
+        _phoneController.text = saved;
+      }
+    } catch (_) {}
   }
 
   @override
@@ -116,11 +147,17 @@ class _SOSScreenState extends State<SOSScreen>
 
   void _restoreActiveSOS(String sosId) {
     final provider = context.read<RescueProvider>();
-    provider.startCitizenLocationUpdates(sosId);
 
     _restoreSosSub?.cancel();
     _restoreSosSub = provider.firebaseSync.watchSOS(sosId).listen((sos) async {
       if (sos != null && mounted) {
+        if (!_locationWatchStarted) {
+          _locationWatchStarted = true;
+          provider.startCitizenLocationUpdates(
+            sosId,
+            pinLocation: sos.locationIsPinned,
+          );
+        }
         setState(() => _lastRequest = sos);
         _startCancelPromptTimer();
       } else if (sos == null && mounted) {
@@ -431,6 +468,7 @@ class _SOSScreenState extends State<SOSScreen>
     _cancelPromptTimer?.cancel();
     provider.clearActiveSOS();
     provider.stopCitizenLocationUpdates();
+    _locationWatchStarted = false;
     _dispatchDestinationPosition = null;
     _dispatchDestinationName = null;
     _dispatchRoutingTo = null;
@@ -520,16 +558,92 @@ class _SOSScreenState extends State<SOSScreen>
 
   Future<void> _sendSOS() async {
     if (_sending) return;
+
+    if (_usePinnedLocation) {
+      if (_pinnedLocation == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tap the map to drop the incident pin first.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      if (_forSomeoneElse && _reportedForController.text.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Enter the name of the person who needs help.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+    }
+
+    final provider = context.read<RescueProvider>();
+    // Ensure citizen profile is loaded (in case screen was opened directly).
+    await provider.loadCitizenProfile();
+
+    if (!_usePinnedLocation && provider.currentPosition == null) {
+      await provider.initLocation();
+    }
+    if (!mounted) return;
+
+    final target =
+        _usePinnedLocation ? _pinnedLocation : provider.currentPosition;
+    if (target != null && !BarangayCoverage.contains(target)) {
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Outside Barangay 52'),
+          content: const Text(
+            'This location is outside Barangay 52 coverage. Send the SOS anyway?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Send anyway'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true) return;
+    }
+
+    final confirmSend = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Send SOS?'),
+        content: const Text(
+          'Only send if this is a real emergency. '
+          'Responders and the barangay command center will be alerted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade800),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Send SOS'),
+          ),
+        ],
+      ),
+    );
+    if (confirmSend != true || !mounted) return;
+
     setState(() => _sending = true);
 
     try {
-      final provider = context.read<RescueProvider>();
-      // Ensure citizen profile is loaded (in case screen was opened directly).
-      await provider.loadCitizenProfile();
-
-      if (provider.currentPosition == null) {
-        await provider.initLocation();
-      }
 
       final name = provider.citizenName ?? 'Citizen User';
       final id = provider.citizenId ?? 'citizen-${name.hashCode}';
@@ -547,10 +661,27 @@ class _SOSScreenState extends State<SOSScreen>
         preferredFacilityId: preferred?.id,
         preferredFacilityName: preferred?.name,
         preferredFacilityLocation: preferred?.position,
+        incidentLocation: _usePinnedLocation ? _pinnedLocation : null,
+        locationIsPinned: _usePinnedLocation,
+        reportedForName:
+            _forSomeoneElse ? _reportedForController.text.trim() : null,
+        callbackPhone: _phoneController.text.trim(),
+        scenePhotoUrl: _scenePhotoUrl,
       );
       _detailsController.clear();
+      final typedPhone = _phoneController.text.trim();
+      if (typedPhone.isNotEmpty) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(_kCallbackPhoneKey, typedPhone);
+        } catch (_) {}
+      }
 
-      provider.startCitizenLocationUpdates(request.id);
+      _locationWatchStarted = true;
+      provider.startCitizenLocationUpdates(
+        request.id,
+        pinLocation: request.locationIsPinned,
+      );
 
       setState(() {
         _lastRequest = request;
@@ -598,10 +729,14 @@ class _SOSScreenState extends State<SOSScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       final provider = context.read<RescueProvider>();
-      final pos = provider.currentPosition;
+      final pos = _usePinnedLocation ? _pinnedLocation : provider.currentPosition;
       final payload = <String, Object?>{
         'sosType': _selectedSosType.name,
         'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'locationIsPinned': _usePinnedLocation,
+        if (_forSomeoneElse) 'reportedForName': _reportedForController.text.trim(),
+        if (_phoneController.text.trim().isNotEmpty)
+          'callbackPhone': _phoneController.text.trim(),
         if (pos != null) 'lat': pos.latitude,
         if (pos != null) 'lng': pos.longitude,
         if (_preferredMedicalFacility != null)
@@ -619,9 +754,51 @@ class _SOSScreenState extends State<SOSScreen>
     }
   }
 
+  LatLng? _sceneLocationForHospital(RescueProvider provider) {
+    if (_usePinnedLocation && _pinnedLocation != null) return _pinnedLocation;
+    return provider.currentPosition;
+  }
+
+  String? _hospitalDistanceLabel(MapLayerPOI poi) {
+    final scene = _sceneLocationForHospital(context.read<RescueProvider>());
+    if (scene == null) return null;
+    return FacilitySearchUtils.formatDistanceKm(
+      GeoUtils.haversineKm(scene, poi.position),
+    );
+  }
+
+  void _suggestNearbyHospital() {
+    final provider = context.read<RescueProvider>();
+    final scene = _sceneLocationForHospital(provider);
+    if (scene == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Set the incident location first.')),
+      );
+      return;
+    }
+    final nearest = FacilitySearchUtils.nearestTo(
+      scene,
+      _citizenMedicalFacilities,
+    );
+    if (nearest == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hospitals found.')),
+      );
+      return;
+    }
+    setState(() => _preferredMedicalFacility = nearest);
+    final dist = FacilitySearchUtils.formatDistanceKm(
+      GeoUtils.haversineKm(scene, nearest.position),
+    );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Nearby: ${nearest.name} • $dist')),
+    );
+  }
+
   Future<void> _openPreferredFacilitySheet() async {
     final controller = TextEditingController();
     String query = '';
+    final scene = _sceneLocationForHospital(context.read<RescueProvider>());
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -633,9 +810,12 @@ class _SOSScreenState extends State<SOSScreen>
         return StatefulBuilder(
           builder: (ctx, setLocal) {
             final q = query.trim();
-            final rows = _citizenMedicalFacilities.where((f) {
+            var rows = _citizenMedicalFacilities.where((f) {
               return FacilitySearchUtils.matches(f, q);
-            }).toList();
+            });
+            final list = scene == null
+                ? rows.toList()
+                : FacilitySearchUtils.sortedByDistance(scene, rows);
             return SafeArea(
               top: false,
               child: Padding(
@@ -671,9 +851,14 @@ class _SOSScreenState extends State<SOSScreen>
                     SizedBox(
                       height: 280,
                       child: ListView.builder(
-                        itemCount: rows.length,
+                        itemCount: list.length,
                         itemBuilder: (_, i) {
-                          final it = rows[i];
+                          final it = list[i];
+                          final dist = scene == null
+                              ? null
+                              : FacilitySearchUtils.formatDistanceKm(
+                                  GeoUtils.haversineKm(scene, it.position),
+                                );
                           return ListTile(
                             leading: const Icon(Icons.local_hospital, color: Colors.redAccent),
                             title: Text(
@@ -681,7 +866,7 @@ class _SOSScreenState extends State<SOSScreen>
                               style: const TextStyle(color: Colors.white),
                             ),
                             subtitle: Text(
-                              '${it.city ?? ''} • ${it.facilityType ?? 'hospital'}\n'
+                              '${dist != null ? '$dist • ' : ''}${it.city ?? ''} • ${it.facilityType ?? 'hospital'}\n'
                               '${_facilityOpenLabel(it)}${it.phone != null ? ' • ${it.phone}' : ''}',
                               style: const TextStyle(color: Colors.white70),
                             ),
@@ -739,6 +924,15 @@ class _SOSScreenState extends State<SOSScreen>
       // If there is already an active SOS, don't send another; keep queued.
       if (provider.activeSosId != null) return;
 
+      final queuedPinned = data['locationIsPinned'] == true;
+      LatLng? queuedPin;
+      if (data['lat'] is num && data['lng'] is num) {
+        queuedPin = LatLng(
+          (data['lat'] as num).toDouble(),
+          (data['lng'] as num).toDouble(),
+        );
+      }
+
       final request = await provider.createSOS(
         citizenId: id,
         citizenName: name,
@@ -754,9 +948,17 @@ class _SOSScreenState extends State<SOSScreen>
                 (data['preferredFacilityLng'] as num).toDouble(),
               )
             : null,
+        incidentLocation: queuedPinned ? queuedPin : null,
+        locationIsPinned: queuedPinned,
+        reportedForName: data['reportedForName'] as String?,
+        callbackPhone: data['callbackPhone'] as String?,
       );
 
-      provider.startCitizenLocationUpdates(request.id);
+      _locationWatchStarted = true;
+      provider.startCitizenLocationUpdates(
+        request.id,
+        pinLocation: request.locationIsPinned,
+      );
       _lastRequest = request;
       _sending = false;
       _watchForDispatch(request.id);
@@ -848,9 +1050,64 @@ class _SOSScreenState extends State<SOSScreen>
     });
   }
 
+  LatLng? _incidentTarget(RescueProvider provider) {
+    if (_lastRequest != null) return _lastRequest!.location;
+    if (_usePinnedLocation) return _pinnedLocation;
+    return provider.currentPosition;
+  }
+
+  Marker _reporterMarker(LatLng point) {
+    return Marker(
+      point: point,
+      width: 48,
+      height: 48,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.blue,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.blue.withValues(alpha: 0.5),
+              blurRadius: 12,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: const Icon(Icons.person, color: Colors.white, size: 22),
+      ),
+    );
+  }
+
+  Marker _incidentMarker(LatLng point) {
+    return Marker(
+      point: point,
+      width: 48,
+      height: 48,
+      child: const Icon(Icons.location_pin, color: Colors.red, size: 48),
+    );
+  }
+
+  List<Marker> _citizenIncidentMarkers(RescueProvider provider) {
+    final gps = provider.currentPosition;
+    final incident = _incidentTarget(provider);
+    final pinned = _lastRequest?.locationIsPinned == true ||
+        (_lastRequest == null && _usePinnedLocation);
+    final markers = <Marker>[];
+    if (pinned) {
+      if (incident != null) markers.add(_incidentMarker(incident));
+      if (gps != null) markers.add(_reporterMarker(gps));
+    } else if (gps != null) {
+      markers.add(_reporterMarker(gps));
+    } else if (incident != null) {
+      markers.add(_incidentMarker(incident));
+    }
+    return markers;
+  }
+
   Future<void> _refreshRoute() async {
     final provider = context.read<RescueProvider>();
-    final fallbackCitizenPos = provider.currentPosition;
+    final fallbackCitizenPos = _incidentTarget(provider);
     final target = _dispatchRoutingTo == 'facility' &&
             _dispatchDestinationPosition != null
         ? _dispatchDestinationPosition!
@@ -880,10 +1137,11 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   void _fitBothMarkers() {
-    final citizenPos = context.read<RescueProvider>().currentPosition;
-    if (_responderPosition == null || citizenPos == null) return;
+    final provider = context.read<RescueProvider>();
+    final incident = _incidentTarget(provider);
+    if (_responderPosition == null || incident == null) return;
 
-    final bounds = LatLngBounds.fromPoints([citizenPos, _responderPosition!]);
+    final bounds = LatLngBounds.fromPoints([incident, _responderPosition!]);
     try {
       _mapController.fitCamera(
         CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(80)),
@@ -912,6 +1170,8 @@ class _SOSScreenState extends State<SOSScreen>
     _mapController.dispose();
     _userMapController.dispose();
     _detailsController.dispose();
+    _reportedForController.dispose();
+    _phoneController.dispose();
     _osrm.dispose();
     super.dispose();
   }
@@ -1118,10 +1378,12 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildWaitingMapContent(RescueProvider provider) {
+    final incident = _incidentTarget(provider);
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: provider.currentPosition ??
+        initialCenter: incident ??
+            provider.currentPosition ??
             const LatLng(14.6544, 120.9840),
         initialZoom: 15,
         interactionOptions: kRescueMapInteractions,
@@ -1129,32 +1391,8 @@ class _SOSScreenState extends State<SOSScreen>
       ),
       children: [
         const RescueMapTileLayer(),
-        if (provider.currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: provider.currentPosition!,
-                width: 48,
-                height: 48,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.blue,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 3),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.blue.withValues(alpha: 0.5),
-                        blurRadius: 12,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
-                  child: const Icon(Icons.person,
-                      color: Colors.white, size: 22),
-                ),
-              ),
-            ],
-          ),
+        ...BarangayCoverage.mapLayers(),
+        MarkerLayer(markers: _citizenIncidentMarkers(provider)),
       ],
     );
   }
@@ -1170,7 +1408,9 @@ class _SOSScreenState extends State<SOSScreen>
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: provider.currentPosition ?? _lastRequest!.location,
+        initialCenter: _incidentTarget(provider) ??
+            provider.currentPosition ??
+            _lastRequest!.location,
         initialZoom: 14,
         interactionOptions: kRescueMapInteractions,
         keepAlive: true,
@@ -1182,6 +1422,7 @@ class _SOSScreenState extends State<SOSScreen>
       ),
       children: [
         const RescueMapTileLayer(),
+        ...BarangayCoverage.mapLayers(),
         if (_routeToMe.length >= 2)
           PolylineLayer(
             polylines: [
@@ -1194,28 +1435,7 @@ class _SOSScreenState extends State<SOSScreen>
           ),
         MarkerLayer(
           markers: [
-            if (provider.currentPosition != null)
-              Marker(
-                point: provider.currentPosition!,
-                width: 48,
-                height: 48,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.blue,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 3),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.blue.withValues(alpha: 0.5),
-                        blurRadius: 12,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
-                  child: const Icon(Icons.person,
-                      color: Colors.white, size: 22),
-                ),
-              ),
+            ..._citizenIncidentMarkers(provider),
             if (_responderPosition != null)
               Marker(
                 point: _responderPosition!,
@@ -1305,10 +1525,13 @@ class _SOSScreenState extends State<SOSScreen>
               child: Column(
                 children: [
                   _buildLocationBanner(provider),
-                  _buildLocationCard(provider.currentPosition),
-                  _buildUserMapSection(provider.currentPosition),
+                  _buildLocationModeSection(provider),
+                  _buildLocationCard(provider),
+                  _buildUserMapSection(provider),
                   _buildSOSTypeSection(),
                   _buildAvailableRescuers(provider),
+                  _buildCallbackPhoneField(),
+                  _buildScenePhotoField(),
                   const SizedBox(height: 24),
                   _buildSOSButton(),
                   const SizedBox(height: 24),
@@ -1360,7 +1583,9 @@ class _SOSScreenState extends State<SOSScreen>
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Keep location on so rescuers can find you accurately.',
+                  _usePinnedLocation
+                      ? 'GPS is optional when you drop a pin for someone else.'
+                      : 'Keep location on so rescuers can find you accurately.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.95),
                     fontSize: 13,
@@ -1382,7 +1607,123 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
-  Widget _buildLocationCard(LatLng? position) {
+  Widget _buildLocationModeSection(RescueProvider provider) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Incident location',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+              color: Color(0xFF1B3A5C),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Use your GPS, or drop a pin if a relative needs help somewhere else.',
+            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('My GPS'),
+                selected: !_usePinnedLocation,
+                onSelected: (_) {
+                  setState(() {
+                    _usePinnedLocation = false;
+                    _forSomeoneElse = false;
+                  });
+                },
+              ),
+              ChoiceChip(
+                label: const Text('Another location'),
+                selected: _usePinnedLocation,
+                onSelected: (_) {
+                  setState(() {
+                    _usePinnedLocation = true;
+                    _userMapVisible = true;
+                    _userMapExpanded = true;
+                    _pinnedLocation ??= provider.currentPosition;
+                  });
+                  final seed = _pinnedLocation ?? provider.currentPosition;
+                  if (seed != null) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      try {
+                        _userMapController.move(seed, 16);
+                      } catch (_) {}
+                    });
+                  }
+                },
+              ),
+            ],
+          ),
+          if (_usePinnedLocation) ...[
+            const SizedBox(height: 8),
+            Text(
+              _pinnedLocation == null
+                  ? 'Tap the map below to drop the incident pin.'
+                  : 'Pin set. Tap the map again to move it.',
+              style: TextStyle(
+                color: _pinnedLocation == null
+                    ? Colors.orange.shade800
+                    : Colors.green.shade800,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              value: _forSomeoneElse,
+              onChanged: (v) => setState(() => _forSomeoneElse = v ?? false),
+              title: const Text(
+                'This SOS is for someone else',
+                style: TextStyle(fontSize: 13),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+            if (_forSomeoneElse)
+              TextField(
+                controller: _reportedForController,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Name of person who needs help',
+                  hintText: 'e.g. Maria (sister)',
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationCard(RescueProvider provider) {
+    final gps = provider.currentPosition;
+    final incident = _incidentTarget(provider);
+    final usingPin = _usePinnedLocation;
+    final title = usingPin
+        ? (incident != null ? 'Pinned incident location' : 'Drop a pin on the map')
+        : (gps != null ? 'Location Acquired' : 'Acquiring Location...');
+    final shown = usingPin ? incident : gps;
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.all(16),
@@ -1401,8 +1742,10 @@ class _SOSScreenState extends State<SOSScreen>
       child: Row(
         children: [
           Icon(
-            position != null ? Icons.location_on : Icons.location_searching,
-            color: position != null ? Colors.green : Colors.orange,
+            shown != null
+                ? (usingPin ? Icons.push_pin : Icons.location_on)
+                : Icons.location_searching,
+            color: shown != null ? Colors.green : Colors.orange,
             size: 28,
           ),
           const SizedBox(width: 12),
@@ -1411,17 +1754,27 @@ class _SOSScreenState extends State<SOSScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  position != null
-                      ? 'Location Acquired'
-                      : 'Acquiring Location...',
+                  title,
                   style: const TextStyle(
                       fontWeight: FontWeight.bold, fontSize: 15),
                 ),
-                if (position != null)
+                if (shown != null)
                   Text(
-                    '${position.latitude.toStringAsFixed(5)}, '
-                    '${position.longitude.toStringAsFixed(5)}',
+                    '${shown.latitude.toStringAsFixed(5)}, '
+                    '${shown.longitude.toStringAsFixed(5)}',
                     style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                  ),
+                if (shown != null && !BarangayCoverage.contains(shown))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'This location is outside Barangay 52.',
+                      style: TextStyle(
+                        color: Colors.orange.shade800,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -1431,24 +1784,26 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
-  Widget _buildUserMapSection(LatLng? position) {
+  Widget _buildUserMapSection(RescueProvider provider) {
+    final gps = provider.currentPosition;
+    final pin = _pinnedLocation;
     if (!_userMapVisible) {
       return Container(
         width: double.infinity,
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         alignment: Alignment.centerLeft,
         child: TextButton.icon(
-          onPressed: position == null
-              ? null
-              : () => setState(() {
-                    _userMapVisible = true;
-                    _userMapExpanded = true;
-                  }),
+          onPressed: () => setState(() {
+            _userMapVisible = true;
+            _userMapExpanded = true;
+          }),
           icon: const Icon(Icons.map),
           label: Text(
-            position == null
-                ? 'Waiting for your GPS location...'
-                : 'Show your location on map',
+            _usePinnedLocation
+                ? 'Show map to drop a pin'
+                : (gps == null
+                    ? 'Waiting for your GPS location...'
+                    : 'Show your location on map'),
           ),
         ),
       );
@@ -1485,7 +1840,7 @@ class _SOSScreenState extends State<SOSScreen>
                   const SizedBox(width: 10),
                   const Expanded(
                     child: Text(
-                      'Your location on map',
+                      'Incident map',
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: 15,
@@ -1523,53 +1878,84 @@ class _SOSScreenState extends State<SOSScreen>
                     child: FlutterMap(
                       mapController: _userMapController,
                       options: MapOptions(
-                        initialCenter: position ?? const LatLng(14.6544, 120.9840),
+                        initialCenter: pin ??
+                            gps ??
+                            const LatLng(14.6544, 120.9840),
                         initialZoom: 15,
                         interactionOptions: kRescueMapInteractions,
                         keepAlive: true,
+                        onTap: _usePinnedLocation
+                            ? (tap, point) {
+                                setState(() => _pinnedLocation = point);
+                              }
+                            : null,
                         onMapReady: () {
-                          if (position != null) {
-                            _userMapController.move(position, 16);
+                          final center = pin ?? gps;
+                          if (center != null) {
+                            _userMapController.move(center, 16);
                           }
                         },
                       ),
                       children: [
                         const RescueMapTileLayer(),
-                        if (position != null)
-                          MarkerLayer(
-                            markers: [
+                        ...BarangayCoverage.mapLayers(),
+                        MarkerLayer(
+                          markers: [
+                            if (gps != null)
                               Marker(
-                                point: position,
-                                width: 48,
-                                height: 48,
+                                point: gps,
+                                width: 44,
+                                height: 44,
                                 child: Container(
                                   decoration: BoxDecoration(
                                     color: Colors.blue,
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 3),
+                                    border: Border.all(
+                                        color: Colors.white, width: 3),
                                     boxShadow: [
                                       BoxShadow(
-                                        color: Colors.blue.withValues(alpha: 0.5),
+                                        color: Colors.blue
+                                            .withValues(alpha: 0.5),
                                         blurRadius: 10,
                                         spreadRadius: 2,
                                       ),
                                     ],
                                   ),
-                                  child: const Icon(Icons.person, color: Colors.white, size: 24),
+                                  child: const Icon(Icons.person,
+                                      color: Colors.white, size: 22),
                                 ),
                               ),
-                            ],
-                          ),
+                            if (_usePinnedLocation && pin != null)
+                              Marker(
+                                point: pin,
+                                width: 48,
+                                height: 48,
+                                child: const Icon(
+                                  Icons.location_pin,
+                                  color: Colors.red,
+                                  size: 48,
+                                ),
+                              ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                  if (position != null)
+                  if (gps != null || pin != null)
                     Positioned(
                       right: 8,
                       bottom: 8,
                       child: IconButton(
-                        icon: const Icon(Icons.my_location, color: Color(0xFF1B3A5C)),
-                        onPressed: () => _userMapController.move(position, 16),
+                        icon: const Icon(Icons.my_location,
+                            color: Color(0xFF1B3A5C)),
+                        onPressed: () {
+                          final center = _usePinnedLocation
+                              ? (pin ?? gps)
+                              : (gps ?? pin);
+                          if (center != null) {
+                            _userMapController.move(center, 16);
+                          }
+                        },
                         style: IconButton.styleFrom(
                           backgroundColor: Colors.white,
                         ),
@@ -1660,8 +2046,10 @@ class _SOSScreenState extends State<SOSScreen>
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    _preferredMedicalFacility?.name ??
-                        'Not selected. Responder can still choose nearest.',
+                    _preferredMedicalFacility == null
+                        ? 'Not selected. Responder can still choose nearest.'
+                        : '${_preferredMedicalFacility!.name}'
+                            '${_hospitalDistanceLabel(_preferredMedicalFacility!) != null ? ' • ${_hospitalDistanceLabel(_preferredMedicalFacility!)}' : ''}',
                     style: TextStyle(
                       fontSize: 12,
                       color: _preferredMedicalFacility == null
@@ -1685,14 +2073,20 @@ class _SOSScreenState extends State<SOSScreen>
                       ),
                     ),
                   const SizedBox(height: 8),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
+                      FilledButton.tonalIcon(
+                        onPressed: _suggestNearbyHospital,
+                        icon: const Icon(Icons.near_me, size: 16),
+                        label: const Text('Suggest nearby'),
+                      ),
                       FilledButton.icon(
                         onPressed: _openPreferredFacilitySheet,
                         icon: const Icon(Icons.search, size: 16),
                         label: const Text('Choose'),
                       ),
-                      const SizedBox(width: 8),
                       if (_preferredMedicalFacility != null)
                         TextButton.icon(
                           onPressed: () =>
@@ -1873,6 +2267,172 @@ class _SOSScreenState extends State<SOSScreen>
     };
   }
 
+  Widget _buildCallbackPhoneField() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.phone, color: Color(0xFF1B3A5C), size: 22),
+              SizedBox(width: 8),
+              Text(
+                'Your phone number',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Color(0xFF1B3A5C),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Optional. SOS still sends if this is empty. Add a number if you want responders to call you.',
+            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phoneController,
+            keyboardType: TextInputType.phone,
+            decoration: InputDecoration(
+              hintText: '09XXXXXXXXX',
+              prefixIcon: const Icon(Icons.call),
+              filled: true,
+              fillColor: Colors.grey.shade100,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickScenePhoto() async {
+    if (_pickingPhoto) return;
+    setState(() => _pickingPhoto = true);
+    try {
+      final file = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 720,
+        maxHeight: 720,
+        imageQuality: 55,
+      );
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) return;
+      if (bytes.length > 250000) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Photo is too large. Pick a smaller image.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      setState(() {
+        _scenePhotoUrl = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not add photo. SOS can still be sent without one.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _pickingPhoto = false);
+    }
+  }
+
+  Widget _buildScenePhotoField() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.photo_camera, color: Color(0xFF1B3A5C), size: 22),
+              SizedBox(width: 8),
+              Text(
+                'Scene photo',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Color(0xFF1B3A5C),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Optional. Helps LGU and responders check the emergency. SOS still sends without a photo.',
+            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          if (_scenePhotoUrl != null) SosScenePhotoThumb(photoUrl: _scenePhotoUrl),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              FilledButton.icon(
+                onPressed: _pickingPhoto ? null : _pickScenePhoto,
+                icon: _pickingPhoto
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_a_photo, size: 16),
+                label: Text(_scenePhotoUrl == null ? 'Add photo' : 'Change photo'),
+              ),
+              if (_scenePhotoUrl != null) ...[
+                const SizedBox(width: 8),
+                TextButton.icon(
+                  onPressed: () => setState(() => _scenePhotoUrl = null),
+                  icon: const Icon(Icons.clear, size: 16),
+                  label: const Text('Remove'),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSOSButton() {
     return Center(
       child: AnimatedBuilder(
@@ -1932,7 +2492,8 @@ class _SOSScreenState extends State<SOSScreen>
       padding: const EdgeInsets.all(24),
       child: Text(
         'Tap the SOS button in an emergency.\n'
-        'Your location will be sent to Barangay 52 Rescue Command.',
+        '${_usePinnedLocation ? 'The pinned location will be sent to Barangay 52 Rescue Command.' : 'Your GPS location will be sent to Barangay 52 Rescue Command.'}\n'
+        'Phone number and photo are optional.',
         textAlign: TextAlign.center,
         style: TextStyle(color: Colors.grey[500], fontSize: 13),
       ),
@@ -1951,7 +2512,8 @@ class _SOSScreenState extends State<SOSScreen>
               FlutterMap(
                 mapController: _mapController,
                 options: MapOptions(
-                  initialCenter: provider.currentPosition ??
+                  initialCenter: _incidentTarget(provider) ??
+                      provider.currentPosition ??
                       const LatLng(14.6544, 120.9840),
                   initialZoom: 15,
                   interactionOptions: kRescueMapInteractions,
@@ -1959,33 +2521,8 @@ class _SOSScreenState extends State<SOSScreen>
                 ),
                 children: [
                   const RescueMapTileLayer(),
-                  if (provider.currentPosition != null)
-                    MarkerLayer(
-                      markers: [
-                        Marker(
-                          point: provider.currentPosition!,
-                          width: 48,
-                          height: 48,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.blue,
-                              shape: BoxShape.circle,
-                              border:
-                                  Border.all(color: Colors.white, width: 3),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.blue.withValues(alpha: 0.5),
-                                  blurRadius: 12,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: const Icon(Icons.person,
-                                color: Colors.white, size: 22),
-                          ),
-                        ),
-                      ],
-                    ),
+                  ...BarangayCoverage.mapLayers(),
+                  MarkerLayer(markers: _citizenIncidentMarkers(provider)),
                 ],
               ),
               Positioned(
@@ -2051,6 +2588,35 @@ class _SOSScreenState extends State<SOSScreen>
                         style:
                             TextStyle(color: Colors.grey[400], fontSize: 14),
                       ),
+                      if (_lastRequest!.locationIsPinned) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          _lastRequest!.isProxyReport
+                              ? 'Pinned for ${_lastRequest!.reportedForName}'
+                              : 'Pinned incident location',
+                          style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      if (_lastRequest!.hasCallbackPhone) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Callback: ${_lastRequest!.callbackPhone}',
+                          style: const TextStyle(
+                            color: Colors.lightGreenAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      if (_lastRequest!.hasScenePhoto)
+                        SosScenePhotoThumb(
+                          photoUrl: _lastRequest!.scenePhotoUrl,
+                          height: 96,
+                        ),
                       const SizedBox(height: 16),
                       if (_dispatchInfo == null)
                         SizedBox(
@@ -2123,7 +2689,8 @@ class _SOSScreenState extends State<SOSScreen>
     String distText = '';
     String etaText = '';
     if (_responderPosition != null) {
-      final citizenPos = context.read<RescueProvider>().currentPosition;
+      final provider = context.read<RescueProvider>();
+      final citizenPos = _incidentTarget(provider);
       if (citizenPos != null) {
         if (_routeDistanceKm > 0) {
           distText = _routeDistanceKm < 1
@@ -2151,14 +2718,16 @@ class _SOSScreenState extends State<SOSScreen>
               return FlutterMap(
                 mapController: _mapController,
                 options: MapOptions(
-                  initialCenter:
-                      provider.currentPosition ?? _lastRequest!.location,
+                  initialCenter: _incidentTarget(provider) ??
+                      provider.currentPosition ??
+                      _lastRequest!.location,
                   initialZoom: 14,
                   interactionOptions: kRescueMapInteractions,
                   keepAlive: true,
                 ),
                 children: [
                   const RescueMapTileLayer(),
+                  ...BarangayCoverage.mapLayers(),
 
                   if (_routeToMe.length >= 2)
                     PolylineLayer(
@@ -2173,29 +2742,7 @@ class _SOSScreenState extends State<SOSScreen>
 
                   MarkerLayer(
                     markers: [
-                      if (provider.currentPosition != null)
-                        Marker(
-                          point: provider.currentPosition!,
-                          width: 48,
-                          height: 48,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.blue,
-                              shape: BoxShape.circle,
-                              border:
-                                  Border.all(color: Colors.white, width: 3),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.blue.withValues(alpha: 0.5),
-                                  blurRadius: 12,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: const Icon(Icons.person,
-                                color: Colors.white, size: 22),
-                          ),
-                        ),
+                      ..._citizenIncidentMarkers(provider),
 
                       if (_responderPosition != null)
                         Marker(

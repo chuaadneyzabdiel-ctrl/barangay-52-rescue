@@ -130,10 +130,53 @@ class _SOSChatPanelState extends State<SOSChatPanel> {
   }
 
   Future<void> _launchCall(String phone) async {
-    final uri = Uri.parse('tel:${phone.trim()}');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
+    final uri = Uri(scheme: 'tel', path: phone.trim());
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  bool get _hasCitizenPhone =>
+      widget.otherPartyPhoneNumber != null &&
+      widget.otherPartyPhoneNumber!.trim().isNotEmpty;
+
+  Widget _citizenPhoneHeader() {
+    final phone = widget.otherPartyPhoneNumber!.trim();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Material(
+        color: const Color(0xFF243447),
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: () => _launchCall(phone),
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.call, color: Color(0xFF2ECC71), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Citizen: $phone',
+                    style: const TextStyle(
+                      color: Colors.lightGreenAccent,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+                const Text(
+                  'Call',
+                  style: TextStyle(
+                    color: Color(0xFF2ECC71),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -156,6 +199,7 @@ class _SOSChatPanelState extends State<SOSChatPanel> {
               label: const Text('Notify LGU'),
             ),
           ),
+        if (_hasCitizenPhone) _citizenPhoneHeader(),
         Expanded(
           child: StreamBuilder<List<Map<String, dynamic>>>(
             stream: _chatStream,
