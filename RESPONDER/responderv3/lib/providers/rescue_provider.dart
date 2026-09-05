@@ -316,7 +316,16 @@ class RescueProvider extends ChangeNotifier {
     final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
     final unitBarangay = _responderUnitBarangayId;
     if (unitBarangay == null) return pending.toList();
-    return pending.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+    final unit = _currentResponderUnit ??
+        _rescueUnitsRoster
+            .where((u) => u.id == _currentResponderSessionUnitId)
+            .firstOrNull;
+    return pending.where((r) {
+      if (r.isOwnedByBarangay(unitBarangay)) return true;
+      if (!r.isVisibleToBarangay(unitBarangay)) return false;
+      if (unit == null) return true;
+      return r.allowsAssistingUnitType(unitBarangay, unit.type);
+    }).toList();
   }
 
   String? get _responderUnitBarangayId {
@@ -1439,6 +1448,18 @@ class RescueProvider extends ChangeNotifier {
     sos.assignedUnitId = unitId;
 
     await _firebaseSync.acceptDispatch(sosId: sosId, unit: unit);
+    await _firebaseSync.logAuditEvent(
+      action: sos.isOwnedByBarangay(unit.barangayId)
+          ? 'UNIT_ACCEPT_DISPATCH'
+          : 'MUTUAL_AID_UNIT_ACCEPT',
+      performedBy: unit.callSign,
+      targetId: sosId,
+      details: {
+        'unitId': unit.id,
+        'unitBarangayId': normalizeBarangayId(unit.barangayId),
+        'sosBarangayId': sos.barangayId,
+      },
+    );
     await _firebaseSync.updateDispatchProgress(
       sosId,
       status: 'enRoute',

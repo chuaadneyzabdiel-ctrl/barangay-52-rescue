@@ -878,7 +878,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
 
   Widget _buildCompactTabbedPanel() {
     return Container(
-      height: 240,
+      height: 300,
       decoration: BoxDecoration(
         color: const Color(0xFF1B2838),
         border: Border(
@@ -902,15 +902,20 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
               child: TabBarView(
                 children: [
                   _buildCompactTabList(
-                    builder: (p) => p.activeSosRequests.isEmpty
+                    builder: (p) => p.activeSosRequests.isEmpty &&
+                            p.inboundMutualAid.isEmpty
                         ? const Center(
                             child: Text('No active SOS',
                                 style: TextStyle(color: Colors.white54)),
                           )
-                        : ListView.builder(
-                            itemCount: p.activeSosRequests.length,
-                            itemBuilder: (_, i) =>
-                                _buildSOSTile(p.activeSosRequests[i]),
+                        : ListView(
+                            children: [
+                              _buildMutualAidInbox(p),
+                              ...List.generate(
+                                p.activeSosRequests.length,
+                                (i) => _buildSOSTile(p.activeSosRequests[i]),
+                              ),
+                            ],
                           ),
                   ),
                   _buildCompactTabList(
@@ -1321,6 +1326,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                 child: ListView(
                   padding: const EdgeInsets.all(8),
                   children: [
+                    _buildMutualAidInbox(provider),
                     if (provider.activeSosRequests.isEmpty)
                       Padding(
                         padding: const EdgeInsets.all(16),
@@ -1605,6 +1611,259 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     );
   }
 
+  String _sosScopeLabel(SOSRequest sos) {
+    final mine = context.read<RescueProvider>().assignedBarangayId;
+    final home = sos.barangayId;
+    if (sos.isOwnedByBarangay(mine)) {
+      if (sos.assistingBarangayIds.isEmpty) {
+        return 'Home barangay $home';
+      }
+      return 'Home barangay $home · assisting ${sos.assistingBarangayIds.join(', ')}';
+    }
+    return 'Assisting barangay $mine · home $home';
+  }
+
+  Widget _buildMutualAidInbox(RescueProvider provider) {
+    final inbound = provider.inboundMutualAid;
+    if (inbound.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: Text(
+              'NEIGHBOR ASSISTANCE',
+              style: TextStyle(
+                color: Color(0xFF4FC3F7),
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.1,
+              ),
+            ),
+          ),
+          ...inbound.map((req) {
+            final sos =
+                provider.sosRequests.where((s) => s.id == req.sosId).firstOrNull;
+            return Card(
+              color: const Color(0xFF1565C0).withValues(alpha: 0.2),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'From Barangay ${req.fromBarangayId}'
+                      '${sos == null ? '' : ' · ${sos.citizenName}'}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                    if (req.message.trim().isNotEmpty)
+                      Text(
+                        req.message,
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                    Text(
+                      'Units: ${req.unitTypes.map((t) {
+                        for (final type in UnitType.values) {
+                          if (type.name == t) return _unitTypeLabel(type);
+                        }
+                        return t;
+                      }).join(', ')}',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        FilledButton(
+                          onPressed: () async {
+                            try {
+                              await provider.respondToMutualAid(
+                                request: req,
+                                accept: true,
+                              );
+                            } catch (e) {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    e.toString().replaceFirst('Bad state: ', ''),
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          child: const Text('Accept'),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed: () async {
+                            try {
+                              await provider.respondToMutualAid(
+                                request: req,
+                                accept: false,
+                              );
+                            } catch (e) {
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    e.toString().replaceFirst('Bad state: ', ''),
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          child: const Text('Decline'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _requestNeighborAssistance(SOSRequest sos) async {
+    final provider = context.read<RescueProvider>();
+    final neighbors = provider.neighborBarangays;
+    if (neighbors.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No neighbor barangays are configured yet.'),
+        ),
+      );
+      return;
+    }
+    String? selected = neighbors.first.id;
+    final message = TextEditingController();
+    final selectedTypes = <String>{
+      sos.sosType == SOSType.medical
+          ? UnitType.ambulance.name
+          : sos.sosType == SOSType.fire
+              ? UnitType.fireTruck.name
+              : UnitType.rescue.name,
+    };
+    final sent = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1B2838),
+              title: const Text('Request neighbor assistance'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'Neighbor barangay',
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          value: selected,
+                          dropdownColor: const Color(0xFF1B2838),
+                          items: [
+                            for (final n in neighbors)
+                              DropdownMenuItem(
+                                value: n.id,
+                                child: Text(n.label),
+                              ),
+                          ],
+                          onChanged: (v) => setLocal(() => selected = v),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final type in UnitType.values)
+                            FilterChip(
+                              label: Text(_unitTypeLabel(type)),
+                              selected: selectedTypes.contains(type.name),
+                              onSelected: (on) {
+                                setLocal(() {
+                                  if (on) {
+                                    selectedTypes.add(type.name);
+                                  } else {
+                                    selectedTypes.remove(type.name);
+                                  }
+                                });
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: message,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Message',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Send request'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (sent != true || !mounted) {
+      message.dispose();
+      return;
+    }
+    try {
+      await provider.requestNeighborAssistance(
+        sos: sos,
+        toBarangayId: selected ?? neighbors.first.id,
+        message: message.text,
+        unitTypes: selectedTypes.toList(),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Assistance request sent.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceFirst('Bad state: ', '')),
+          ),
+        );
+      }
+    } finally {
+      message.dispose();
+    }
+  }
+
   Widget _buildSOSTile(SOSRequest sos) {
     final unacked = _isUnacked(sos.id);
     final escalated = _escalatedSosIds.contains(sos.id);
@@ -1637,8 +1896,9 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
             style: const TextStyle(color: Colors.white, fontSize: 13)),
         subtitle: Text(
           '${_addressFor(sos)}\n$typeLabel · ${sos.priority.name.toUpperCase()} · ${sos.status.name}'
-          '${sos.locationIsPinned ? (sos.isProxyReport ? ' · For ${sos.reportedForName}' : ' · Pinned') : ''}',
-          maxLines: 3,
+          '${sos.locationIsPinned ? (sos.isProxyReport ? ' · For ${sos.reportedForName}' : ' · Pinned') : ''}'
+          '\n${_sosScopeLabel(sos)}',
+          maxLines: 4,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(color: Colors.grey[500], fontSize: 11),
         ),
@@ -1900,9 +2160,18 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
+                  Text(
                   '${SOSTypeInfo.forType(sos.sosType).label} · ${sos.priority.name.toUpperCase()} · ${sos.status.name}',
                   style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _sosScopeLabel(sos),
+                  style: const TextStyle(
+                    color: Color(0xFF4FC3F7),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 if (sos.locationIsPinned) ...[
                   const SizedBox(height: 6),
@@ -1994,6 +2263,18 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 ],
                 const SizedBox(height: 16),
+                if (sos.isOwnedByBarangay(
+                    context.read<RescueProvider>().assignedBarangayId)) ...[
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _requestNeighborAssistance(sos);
+                    },
+                    icon: const Icon(Icons.handshake, size: 18),
+                    label: const Text('Request neighbor assistance'),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 _buildAssistUnitSection(ctx, sos, address),
                 const SizedBox(height: 16),
                 const Text(

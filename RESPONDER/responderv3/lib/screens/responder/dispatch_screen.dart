@@ -1106,6 +1106,8 @@ class _DispatchScreenState extends State<DispatchScreen> {
                                   horizontal: 16, vertical: 6),
                               child: _DispatchCard(
                                 request: request,
+                                unitBarangayId: responderUnit?.barangayId ??
+                                    request.barangayId,
                                 responderPosition:
                                     provider.currentPosition,
                                 isAccepting: _isAccepting,
@@ -1251,6 +1253,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
 class _DispatchCard extends StatelessWidget {
   final SOSRequest request;
+  final String unitBarangayId;
   final LatLng? responderPosition;
   final bool isAccepting;
   final bool canAccept;
@@ -1260,6 +1263,7 @@ class _DispatchCard extends StatelessWidget {
 
   const _DispatchCard({
     required this.request,
+    required this.unitBarangayId,
     required this.responderPosition,
     required this.isAccepting,
     required this.canAccept,
@@ -1334,6 +1338,26 @@ class _DispatchCard extends StatelessWidget {
                   style: TextStyle(color: Colors.grey[500], fontSize: 12),
                 ),
               ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: request.isOwnedByBarangay(unitBarangayId)
+                    ? Colors.green.withValues(alpha: 0.22)
+                    : const Color(0xFF1565C0).withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                request.isOwnedByBarangay(unitBarangayId)
+                    ? 'Home barangay ${request.barangayId}'
+                    : 'Assisting barangay $unitBarangayId · home ${request.barangayId}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ),
             const SizedBox(height: 12),
             Container(

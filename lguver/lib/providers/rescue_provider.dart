@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/osrm_navigation_models.dart';
 import '../models/barangay.dart';
+import '../models/mutual_aid.dart';
 import '../models/rescue_models.dart';
 import '../services/a_star_routing_service.dart';
 import '../services/dynamic_relocation_service.dart';
@@ -97,7 +98,9 @@ class RescueProvider extends ChangeNotifier {
   String? _assignedBarangayId;
   String? _lguUsername;
   List<BarangayRecord> _barangays = List<BarangayRecord>.from(kBuiltInBarangays);
+  List<MutualAidRequest> _mutualAidRequests = [];
   StreamSubscription? _barangaysSub;
+  StreamSubscription? _mutualAidSub;
 
   // Location status for "turn on location" prompts
   LocationStatus? _locationStatus;
@@ -143,6 +146,31 @@ class RescueProvider extends ChangeNotifier {
       _currentRole == UserRole.lguAdmin &&
       (_assignedBarangayId != null && _assignedBarangayId!.trim().isNotEmpty);
   List<BarangayRecord> get barangays => List.unmodifiable(_barangays);
+  List<MutualAidRequest> get mutualAidRequests =>
+      List.unmodifiable(_mutualAidRequests);
+  List<MutualAidRequest> get inboundMutualAid {
+    if (!isLguScoped) return const [];
+    return _mutualAidRequests
+        .where((r) => r.toBarangayId == assignedBarangayId && r.isPending)
+        .toList();
+  }
+
+  List<MutualAidRequest> get outboundMutualAid {
+    if (!isLguScoped) return const [];
+    return _mutualAidRequests
+        .where((r) => r.fromBarangayId == assignedBarangayId)
+        .toList();
+  }
+
+  List<BarangayRecord> get neighborBarangays {
+    final home = _barangays
+        .where((b) => b.id == assignedBarangayId)
+        .firstOrNull;
+    final ids = home?.neighbors ?? const <String>[];
+    return _barangays
+        .where((b) => ids.contains(b.id) && b.id != assignedBarangayId)
+        .toList();
+  }
 
   RescueProvider({
     AStarRoutingService? routingService,
@@ -352,7 +380,16 @@ class RescueProvider extends ChangeNotifier {
     final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
     final unitBarangay = _responderUnitBarangayId;
     if (unitBarangay == null) return pending.toList();
-    return pending.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+    final unit = _currentResponderUnit ??
+        _rescueUnitsRoster
+            .where((u) => u.id == _currentResponderSessionUnitId)
+            .firstOrNull;
+    return pending.where((r) {
+      if (r.isOwnedByBarangay(unitBarangay)) return true;
+      if (!r.isVisibleToBarangay(unitBarangay)) return false;
+      if (unit == null) return true;
+      return r.allowsAssistingUnitType(unitBarangay, unit.type);
+    }).toList();
   }
 
   String? get _responderUnitBarangayId {
@@ -503,6 +540,104 @@ class RescueProvider extends ChangeNotifier {
     _assignedBarangayId = null;
     await clearPersistedSessionKeys();
     _currentRole = UserRole.citizen;
+    notifyListeners();
+  }
+
+  Future<void> requestNeighborAssistance({
+    required SOSRequest sos,
+    required String toBarangayId,
+    required String message,
+    required List<String> unitTypes,
+  }) async {
+    if (!isLguScoped) {
+      throw StateError('Sign in to a barangay command center first.');
+    }
+    if (sos.barangayId != assignedBarangayId) {
+      throw StateError('Only the home barangay can request neighbor assistance.');
+    }
+    final neighbor = normalizeBarangayId(toBarangayId);
+    if (neighbor == assignedBarangayId) {
+      throw StateError('Pick a neighbor barangay.');
+    }
+    final types = unitTypes.where((t) => t.trim().isNotEmpty).toSet().toList();
+    if (types.isEmpty) {
+      throw StateError('Choose at least one unit type.');
+    }
+    final alreadyOpen = _mutualAidRequests.any(
+      (r) =>
+          r.sosId == sos.id &&
+          r.toBarangayId == neighbor &&
+          r.isPending,
+    );
+    if (alreadyOpen) {
+      throw StateError('A pending request to Barangay $neighbor already exists.');
+    }
+    final request = MutualAidRequest(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      sosId: sos.id,
+      fromBarangayId: assignedBarangayId,
+      toBarangayId: neighbor,
+      message: message.trim(),
+      unitTypes: types,
+      status: 'pending',
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      createdBy: _lguUsername ?? 'lgu',
+    );
+    await _firebaseSync.publishMutualAidRequest(request);
+    await _firebaseSync.logAuditEvent(
+      action: 'MUTUAL_AID_REQUESTED',
+      performedBy: _lguUsername ?? 'lgu',
+      targetId: sos.id,
+      details: {
+        'fromBarangayId': assignedBarangayId,
+        'toBarangayId': neighbor,
+        'unitTypes': types.join(','),
+      },
+    );
+    notifyListeners();
+  }
+
+  Future<void> respondToMutualAid({
+    required MutualAidRequest request,
+    required bool accept,
+  }) async {
+    if (!isLguScoped || request.toBarangayId != assignedBarangayId) {
+      throw StateError('This request is not assigned to this barangay.');
+    }
+    if (!request.isPending) return;
+    final status = accept ? 'accepted' : 'declined';
+    await _firebaseSync.updateMutualAidRequestStatus(
+      id: request.id,
+      status: status,
+    );
+    if (accept) {
+      final sos = _sosRequests.where((s) => s.id == request.sosId).firstOrNull;
+      if (sos != null) {
+        final assisting = [...sos.assistingBarangayIds];
+        if (!assisting.contains(assignedBarangayId)) {
+          assisting.add(assignedBarangayId);
+        }
+        final types = Map<String, List<String>>.from(sos.assistingUnitTypes);
+        types[assignedBarangayId] = request.unitTypes;
+        sos.assistingBarangayIds = assisting;
+        sos.assistingUnitTypes = types;
+        await _firebaseSync.updateSosAssistance(
+          sosId: sos.id,
+          assistingBarangayIds: assisting,
+          assistingUnitTypes: types,
+        );
+      }
+    }
+    await _firebaseSync.logAuditEvent(
+      action: accept ? 'MUTUAL_AID_ACCEPTED' : 'MUTUAL_AID_DECLINED',
+      performedBy: _lguUsername ?? 'lgu',
+      targetId: request.sosId,
+      details: {
+        'fromBarangayId': request.fromBarangayId,
+        'toBarangayId': request.toBarangayId,
+        'requestId': request.id,
+      },
+    );
     notifyListeners();
   }
 
@@ -731,6 +866,19 @@ class RescueProvider extends ChangeNotifier {
       },
     );
 
+    _mutualAidSub = _firebaseSync.watchMutualAidRequests().listen(
+      (rows) {
+        _firebaseLogStreamFirstOk('watchMutualAidRequests');
+        _mutualAidRequests = rows;
+        notifyListeners();
+      },
+      onError: (e, st) {
+        _firebaseLogStreamError('watchMutualAidRequests', e, st);
+        _mutualAidRequests = [];
+        notifyListeners();
+      },
+    );
+
     _hazardSub = _firebaseSync.watchAllHazardZones().listen(
       (zones) {
         _firebaseLogStreamFirstOk('watchAllHazardZones');
@@ -767,6 +915,7 @@ class RescueProvider extends ChangeNotifier {
     _usersSub?.cancel();
     _unitAccountsSub?.cancel();
     _barangaysSub?.cancel();
+    _mutualAidSub?.cancel();
     _listenersStarted = false;
   }
 
@@ -1636,6 +1785,18 @@ class RescueProvider extends ChangeNotifier {
     sos.assignedUnitId = unitId;
 
     await _firebaseSync.acceptDispatch(sosId: sosId, unit: unit);
+    await _firebaseSync.logAuditEvent(
+      action: sos.isOwnedByBarangay(unit.barangayId)
+          ? 'UNIT_ACCEPT_DISPATCH'
+          : 'MUTUAL_AID_UNIT_ACCEPT',
+      performedBy: _lguUsername ?? unit.callSign,
+      targetId: sosId,
+      details: {
+        'unitId': unit.id,
+        'unitBarangayId': normalizeBarangayId(unit.barangayId),
+        'sosBarangayId': sos.barangayId,
+      },
+    );
     await _firebaseSync.updateDispatchProgress(
       sosId,
       status: 'enRoute',

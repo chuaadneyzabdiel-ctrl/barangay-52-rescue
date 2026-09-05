@@ -208,6 +208,8 @@ class SOSRequest {
   final String barangayId;
   /// Neighbor barangays that accepted mutual aid for this SOS.
   List<String> assistingBarangayIds;
+  /// Unit types requested per assisting barangay (`ambulance`, `fireTruck`, ...).
+  Map<String, List<String>> assistingUnitTypes;
 
   SOSRequest({
     required this.id,
@@ -230,6 +232,7 @@ class SOSRequest {
     this.scenePhotoUrl,
     this.barangayId = kDefaultBarangayId,
     this.assistingBarangayIds = const [],
+    this.assistingUnitTypes = const {},
   });
 
   bool get isProxyReport =>
@@ -248,6 +251,12 @@ class SOSRequest {
     final target = normalizeBarangayId(id);
     if (isOwnedByBarangay(target)) return true;
     return assistingBarangayIds.any((b) => normalizeBarangayId(b) == target);
+  }
+
+  bool allowsAssistingUnitType(String barangayId, UnitType type) {
+    final types = assistingUnitTypes[normalizeBarangayId(barangayId)] ?? const [];
+    if (types.isEmpty) return true;
+    return types.contains(type.name);
   }
 
   /// True if this request should appear on the active map.
@@ -289,6 +298,8 @@ class SOSRequest {
         'barangayId': normalizeBarangayId(barangayId),
         if (assistingBarangayIds.isNotEmpty)
           'assistingBarangayIds': assistingBarangayIds,
+        if (assistingUnitTypes.isNotEmpty)
+          'assistingUnitTypes': assistingUnitTypes,
       };
 
   factory SOSRequest.fromJson(Map<String, dynamic> json) {
@@ -358,6 +369,7 @@ class SOSRequest {
       scenePhotoUrl: json['scenePhotoUrl'] as String?,
       barangayId: normalizeBarangayId(json['barangayId']?.toString()),
       assistingBarangayIds: _stringList(json['assistingBarangayIds']),
+      assistingUnitTypes: _stringListMap(json['assistingUnitTypes']),
     );
   }
 }
@@ -368,6 +380,17 @@ List<String> _stringList(dynamic raw) {
     for (final e in raw) {
       final id = e?.toString().trim() ?? '';
       if (id.isNotEmpty && !out.contains(id)) out.add(id);
+    }
+  }
+  return out;
+}
+
+Map<String, List<String>> _stringListMap(dynamic raw) {
+  final out = <String, List<String>>{};
+  if (raw is Map) {
+    for (final e in raw.entries) {
+      final key = normalizeBarangayId(e.key.toString());
+      out[key] = _stringList(e.value);
     }
   }
   return out;

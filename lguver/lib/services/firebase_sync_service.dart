@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:latlong2/latlong.dart';
 import '../firebase_options.dart';
 import '../models/barangay.dart';
+import '../models/mutual_aid.dart';
 import '../models/rescue_models.dart';
 import '../utils/password_utils.dart';
 
@@ -1095,10 +1096,46 @@ class FirebaseSyncService {
     });
   }
 
-  Future<void> updateSosAssistingBarangays(
-    String sosId,
-    List<String> barangayIds,
-  ) async {
-    await _db.ref('active_sos/$sosId/assistingBarangayIds').set(barangayIds);
+  Future<void> updateSosAssistance({
+    required String sosId,
+    required List<String> assistingBarangayIds,
+    required Map<String, List<String>> assistingUnitTypes,
+  }) async {
+    await _db.ref('active_sos/$sosId').update({
+      'assistingBarangayIds': assistingBarangayIds,
+      'assistingUnitTypes': assistingUnitTypes,
+    });
+  }
+
+  Future<void> publishMutualAidRequest(MutualAidRequest request) async {
+    await _db.ref('mutual_aid_requests/${request.id}').set(request.toJson());
+  }
+
+  Future<void> updateMutualAidRequestStatus({
+    required String id,
+    required String status,
+  }) async {
+    await _db.ref('mutual_aid_requests/$id').update({
+      'status': status,
+      'respondedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Stream<List<MutualAidRequest>> watchMutualAidRequests() {
+    return _db.ref('mutual_aid_requests').onValue.map((event) {
+      final data = event.snapshot.value as Map?;
+      if (data == null) return <MutualAidRequest>[];
+      final rows = <MutualAidRequest>[];
+      for (final e in data.entries) {
+        final raw = e.value;
+        if (raw is! Map) continue;
+        rows.add(MutualAidRequest.fromJson(
+          e.key.toString(),
+          Map<dynamic, dynamic>.from(raw),
+        ));
+      }
+      rows.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return rows;
+    });
   }
 }
