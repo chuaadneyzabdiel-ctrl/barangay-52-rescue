@@ -18,6 +18,7 @@ import '../../services/osrm_routing_service.dart';
 import '../../services/local_notification_service.dart';
 import '../../services/map_layer_data_service.dart';
 import '../../utils/geo_utils.dart';
+import '../../utils/route_geo_utils.dart';
 import '../../utils/facility_search_utils.dart';
 import '../../widgets/sos_chat_panel.dart';
 import '../../widgets/sos_scene_photo.dart';
@@ -56,6 +57,11 @@ class _SOSScreenState extends State<SOSScreen>
   double _routeDistanceKm = 0;
   double _routeEtaMinutes = 0;
   Timer? _routeRefreshTimer;
+  Timer? _routeDebounce;
+  LatLng? _lastRoutedFrom;
+  DateTime? _lastRouteAt;
+  bool _routeRefreshInFlight = false;
+  bool _routeRefreshPending = false;
   Timer? _cancelPromptTimer;
   final OsrmRoutingService _osrm = OsrmRoutingService();
 
@@ -209,17 +215,7 @@ class _SOSScreenState extends State<SOSScreen>
         });
         final unitId = info['unitId'] as String?;
         if (unitId != null && _responderLocationSub == null) {
-          _responderLocationSub = provider.firebaseSync
-              .watchUnitLocation(unitId)
-              .listen((pos) {
-            if (pos != null && mounted) {
-              setState(() => _responderPosition = pos);
-              // Do not auto-fit here: lets the user pan/zoom without snap-back
-            }
-          });
-          _routeRefreshTimer?.cancel();
-          _routeRefreshTimer =
-              Timer.periodic(const Duration(seconds: 8), (_) => _refreshRoute());
+          _startResponderTracking(provider, unitId);
         }
       }
     });
@@ -242,8 +238,8 @@ class _SOSScreenState extends State<SOSScreen>
     final phase = info['phase'] as String?;
     final routingTo = info['routingTo'] as String?;
     final destinationName = info['destinationName'] as String?;
-    final distanceMeters = (info['distanceMeters'] as num?)?.toInt();
-    final etaMinutes = (info['etaMinutes'] as num?)?.toInt();
+    final distanceMeters = _safeInt(info['distanceMeters']);
+    final etaMinutes = _safeInt(info['etaMinutes']);
 
     _CitizenLiveStatusType nextType = _CitizenLiveStatusType.enRoute;
     String nextTitle = 'Responder en route';
@@ -301,14 +297,14 @@ class _SOSScreenState extends State<SOSScreen>
     final phase = info['phase'] as String?;
     final routingTo = info['routingTo'] as String?;
     final destinationName = info['destinationName'] as String?;
-    final distanceMeters = (info['distanceMeters'] as num?)?.toInt();
+    final distanceMeters = _safeInt(info['distanceMeters']);
 
     if (!_notifiedResponderNearby30m &&
         routingTo == 'sos' &&
         distanceMeters != null &&
         distanceMeters <= 30) {
       _notifiedResponderNearby30m = true;
-      final meters = distanceMeters.clamp(0, 30).toInt();
+      final meters = distanceMeters.clamp(0, 30);
       LocalNotificationService().showResponderNearby(meters: meters);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -465,6 +461,7 @@ class _SOSScreenState extends State<SOSScreen>
     _restoreSosSub?.cancel();
     _sosCompletedSub?.cancel();
     _routeRefreshTimer?.cancel();
+    _routeDebounce?.cancel();
     _cancelPromptTimer?.cancel();
     provider.clearActiveSOS();
     provider.stopCitizenLocationUpdates();
@@ -484,6 +481,8 @@ class _SOSScreenState extends State<SOSScreen>
       _dispatchInfo = null;
       _responderPosition = null;
       _routeToMe = [];
+      _lastRoutedFrom = null;
+      _lastRouteAt = null;
       _showRescueCompleteOverlay = true;
     });
     _rescueCompleteOverlayTimer?.cancel();
@@ -515,6 +514,8 @@ class _SOSScreenState extends State<SOSScreen>
       _dispatchInfo = null;
       _responderPosition = null;
       _routeToMe = [];
+      _lastRoutedFrom = null;
+      _lastRouteAt = null;
       _showRescueCompleteOverlay = false;
     });
     _rescueCompleteOverlayTimer?.cancel();
@@ -530,6 +531,7 @@ class _SOSScreenState extends State<SOSScreen>
     _restoreSosSub?.cancel();
     _sosCompletedSub?.cancel();
     _routeRefreshTimer?.cancel();
+    _routeDebounce?.cancel();
     _cancelPromptTimer?.cancel();
     _rescueCompleteOverlayTimer?.cancel();
 
@@ -541,6 +543,8 @@ class _SOSScreenState extends State<SOSScreen>
       _dispatchInfo = null;
       _responderPosition = null;
       _routeToMe = [];
+      _lastRoutedFrom = null;
+      _lastRouteAt = null;
       _dispatchDestinationPosition = null;
       _dispatchDestinationName = null;
       _dispatchRoutingTo = null;
@@ -1036,18 +1040,7 @@ class _SOSScreenState extends State<SOSScreen>
 
       final unitId = info['unitId'] as String?;
       if (unitId != null && _responderLocationSub == null) {
-        _responderLocationSub = provider.firebaseSync
-            .watchUnitLocation(unitId)
-            .listen((pos) {
-          if (pos != null && mounted) {
-            setState(() => _responderPosition = pos);
-            // Do not auto-fit here: lets the user pan/zoom without snap-back
-          }
-        });
-
-        _routeRefreshTimer?.cancel();
-        _routeRefreshTimer =
-            Timer.periodic(const Duration(seconds: 8), (_) => _refreshRoute());
+        _startResponderTracking(provider, unitId);
       }
     });
   }
@@ -1107,7 +1100,86 @@ class _SOSScreenState extends State<SOSScreen>
     return markers;
   }
 
-  Future<void> _refreshRoute() async {
+  /// Live GPS + route polyline that follows the responder (trim-ahead like responder nav).
+  void _startResponderTracking(RescueProvider provider, String unitId) {
+    _responderLocationSub?.cancel();
+    _responderLocationSub =
+        provider.firebaseSync.watchUnitLocation(unitId).listen((pos) {
+      if (pos == null || !mounted) return;
+      setState(() => _responderPosition = pos);
+      // Trim is instant via [_routeAhead]; only OSRM-rebuild when off the line.
+      _scheduleCitizenRouteRefresh();
+    });
+
+    _routeRefreshTimer?.cancel();
+    _routeRefreshTimer =
+        Timer.periodic(const Duration(seconds: 12), (_) => _refreshRoute());
+    unawaited(_refreshRoute(force: true));
+  }
+
+  /// Drawn route ahead of the live responder pin (no wait for OSRM).
+  List<LatLng> get _routeAhead {
+    final pos = _responderPosition;
+    if (_routeToMe.length < 2) return const [];
+    final clean = <LatLng>[
+      for (final p in _routeToMe)
+        if (p.latitude.isFinite && p.longitude.isFinite) p,
+    ];
+    if (clean.length < 2) return const [];
+    if (pos == null ||
+        !pos.latitude.isFinite ||
+        !pos.longitude.isFinite) {
+      return clean;
+    }
+    try {
+      final ahead = RouteGeoUtils.remainingPolyline(pos, clean);
+      return [
+        for (final p in ahead)
+          if (p.latitude.isFinite && p.longitude.isFinite) p,
+      ];
+    } catch (_) {
+      return clean;
+    }
+  }
+
+  static double _finiteOr(double value, [double fallback = 0]) {
+    if (value.isNaN || value.isInfinite) return fallback;
+    return value;
+  }
+
+  static int? _safeInt(dynamic value) {
+    if (value is! num) return null;
+    if (value.isNaN || value.isInfinite) return null;
+    return value.round();
+  }
+
+  void _scheduleCitizenRouteRefresh() {
+    final pos = _responderPosition;
+    if (pos == null) return;
+
+    var farOff = _routeToMe.length < 2;
+    if (_routeToMe.length >= 2) {
+      var minDist = double.infinity;
+      for (final p in _routeToMe) {
+        final d = GeoUtils.haversineKm(pos, p);
+        if (d < minDist) minDist = d;
+      }
+      farOff = minDist > 0.08; // ~80m off the polyline → rebuild via OSRM
+    } else if (_lastRoutedFrom != null) {
+      farOff = GeoUtils.haversineKm(_lastRoutedFrom!, pos) > 0.05;
+    }
+
+    // While on-route, trimming is enough — don't spam OSRM.
+    if (!farOff && _routeToMe.length >= 2) return;
+
+    _routeDebounce?.cancel();
+    _routeDebounce = Timer(
+      const Duration(milliseconds: 250),
+      () => unawaited(_refreshRoute(force: true)),
+    );
+  }
+
+  Future<void> _refreshRoute({bool force = false}) async {
     final provider = context.read<RescueProvider>();
     final fallbackCitizenPos = _incidentTarget(provider);
     final target = _dispatchRoutingTo == 'facility' &&
@@ -1115,25 +1187,74 @@ class _SOSScreenState extends State<SOSScreen>
         ? _dispatchDestinationPosition!
         : fallbackCitizenPos;
     if (_responderPosition == null || target == null) return;
+    if (_routeRefreshInFlight) {
+      _routeRefreshPending = true;
+      return;
+    }
 
+    final now = DateTime.now();
+    if (!force &&
+        _lastRouteAt != null &&
+        now.difference(_lastRouteAt!) < const Duration(seconds: 3) &&
+        _lastRoutedFrom != null &&
+        GeoUtils.haversineKm(_lastRoutedFrom!, _responderPosition!) < 0.05) {
+      return;
+    }
+
+    _routeRefreshInFlight = true;
     try {
-      final result = await _osrm.getRoute(_responderPosition!, target);
-      if (!result.isEmpty && mounted) {
+      final from = _responderPosition!;
+      final result = await _osrm.getRoute(from, target);
+      if (!mounted) return;
+      if (!result.isEmpty) {
         setState(() {
-          _routeToMe = result.points;
-          _routeDistanceKm = result.distanceKm;
-          _routeEtaMinutes = result.durationMinutes;
+          _routeToMe = [
+            for (final p in result.points)
+              if (p.latitude.isFinite && p.longitude.isFinite) p,
+          ];
+          if (_routeToMe.length < 2) {
+            _routeToMe = [from, target];
+          }
+          _routeDistanceKm = _finiteOr(result.distanceKm, GeoUtils.haversineKm(from, target));
+          _routeEtaMinutes = _finiteOr(
+            result.durationMinutes,
+            _routeDistanceKm / 0.5,
+          );
+          _lastRoutedFrom = from;
+          _lastRouteAt = DateTime.now();
+        });
+      } else {
+        final dist = _finiteOr(GeoUtils.haversineKm(from, target));
+        setState(() {
+          _routeToMe = [from, target];
+          _routeDistanceKm = dist;
+          _routeEtaMinutes = dist / 0.5;
+          _lastRoutedFrom = from;
+          _lastRouteAt = DateTime.now();
         });
       }
     } catch (_) {
-      // Fallback: straight-line estimate
-      if (mounted) {
-        final dist = GeoUtils.haversineKm(_responderPosition!, target);
-        setState(() {
-          _routeToMe = [];
-          _routeDistanceKm = dist;
-          _routeEtaMinutes = dist / 0.5;
-        });
+      if (!mounted) return;
+      final from = _responderPosition!;
+      if (!from.latitude.isFinite ||
+          !from.longitude.isFinite ||
+          !target.latitude.isFinite ||
+          !target.longitude.isFinite) {
+        return;
+      }
+      final dist = _finiteOr(GeoUtils.haversineKm(from, target));
+      setState(() {
+        _routeToMe = [from, target];
+        _routeDistanceKm = dist;
+        _routeEtaMinutes = dist / 0.5;
+        _lastRoutedFrom = from;
+        _lastRouteAt = DateTime.now();
+      });
+    } finally {
+      _routeRefreshInFlight = false;
+      if (_routeRefreshPending && mounted) {
+        _routeRefreshPending = false;
+        unawaited(_refreshRoute(force: true));
       }
     }
   }
@@ -1160,6 +1281,7 @@ class _SOSScreenState extends State<SOSScreen>
     _restoreSosSub?.cancel();
     _sosCompletedSub?.cancel();
     _routeRefreshTimer?.cancel();
+    _routeDebounce?.cancel();
     _cancelPromptTimer?.cancel();
     _rescueCompleteOverlayTimer?.cancel();
     try {
@@ -1429,11 +1551,11 @@ class _SOSScreenState extends State<SOSScreen>
         ...BarangayCoverage.mapLayers(
           barangayId: provider.citizenBarangayId,
         ),
-        if (_routeToMe.length >= 2)
+        if (_routeAhead.length >= 2)
           PolylineLayer(
             polylines: [
               Polyline(
-                points: _routeToMe,
+                points: _routeAhead,
                 color: Colors.blue,
                 strokeWidth: 5,
               ),
@@ -2667,8 +2789,8 @@ class _SOSScreenState extends State<SOSScreen>
     final nextInstruction = _dispatchInfo?['nextInstruction'] as String?;
     final destinationName =
         (_dispatchInfo?['destinationName'] as String?) ?? _dispatchDestinationName;
-    final progressEta = _dispatchInfo?['etaMinutes'] as num?;
-    final progressDistanceM = _dispatchInfo?['distanceMeters'] as num?;
+    final progressEta = _safeInt(_dispatchInfo?['etaMinutes']);
+    final progressDistanceM = _safeInt(_dispatchInfo?['distanceMeters']);
 
     final IconData unitIcon = switch (unitType) {
       'ambulance' => Icons.local_hospital,
@@ -2706,20 +2828,28 @@ class _SOSScreenState extends State<SOSScreen>
       final provider = context.read<RescueProvider>();
       final citizenPos = _incidentTarget(provider);
       if (citizenPos != null) {
-        if (_routeDistanceKm > 0) {
-          distText = _routeDistanceKm < 1
-              ? '${(_routeDistanceKm * 1000).toStringAsFixed(0)}m'
-              : '${_routeDistanceKm.toStringAsFixed(1)} km';
-          etaText = _routeEtaMinutes < 1
-              ? 'Less than 1 min'
-              : '${_routeEtaMinutes.toStringAsFixed(0)} min';
-        } else {
-          final km = GeoUtils.haversineKm(_responderPosition!, citizenPos);
-          distText = km < 1
-              ? '${(km * 1000).toStringAsFixed(0)}m'
-              : '${km.toStringAsFixed(1)} km';
-          etaText = '~${(km / 0.5).toStringAsFixed(0)} min';
-        }
+        var liveKm = _routeToMe.length >= 2
+            ? RouteGeoUtils.remainingDistanceKm(
+                _responderPosition!,
+                _routeToMe,
+              )
+            : (_routeDistanceKm > 0
+                ? _routeDistanceKm
+                : GeoUtils.haversineKm(_responderPosition!, citizenPos));
+        liveKm = _finiteOr(liveKm);
+        var liveEta = _routeDistanceKm > 0.001 &&
+                _routeEtaMinutes > 0 &&
+                _routeDistanceKm.isFinite &&
+                _routeEtaMinutes.isFinite
+            ? _routeEtaMinutes * (liveKm / _routeDistanceKm)
+            : liveKm / 0.5;
+        liveEta = _finiteOr(liveEta);
+        distText = liveKm < 1
+            ? '${(liveKm * 1000).round()}m'
+            : '${liveKm.toStringAsFixed(1)} km';
+        etaText = liveEta < 1
+            ? 'Less than 1 min'
+            : '${liveEta.round()} min';
       }
     }
 
@@ -2745,11 +2875,11 @@ class _SOSScreenState extends State<SOSScreen>
                     barangayId: provider.citizenBarangayId,
                   ),
 
-                  if (_routeToMe.length >= 2)
+                  if (_routeAhead.length >= 2)
                     PolylineLayer(
                       polylines: [
                         Polyline(
-                          points: _routeToMe,
+                          points: _routeAhead,
                           color: Colors.blue,
                           strokeWidth: 5,
                         ),
@@ -2963,7 +3093,7 @@ class _SOSScreenState extends State<SOSScreen>
                                     Padding(
                                       padding: const EdgeInsets.only(top: 4),
                                       child: Text(
-                                        '${progressDistanceM != null ? '${progressDistanceM.round()} m' : ''}${progressDistanceM != null && progressEta != null ? ' • ' : ''}${progressEta != null ? '${progressEta.round()} min' : ''}',
+                                        '${progressDistanceM != null ? '$progressDistanceM m' : ''}${progressDistanceM != null && progressEta != null ? ' • ' : ''}${progressEta != null ? '$progressEta min' : ''}',
                                         style: const TextStyle(
                                             color: Colors.white70, fontSize: 12),
                                       ),

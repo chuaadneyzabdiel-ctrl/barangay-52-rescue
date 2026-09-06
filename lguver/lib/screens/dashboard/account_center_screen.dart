@@ -33,7 +33,7 @@ class AccountCenterScreen extends StatelessWidget {
     final responderRows = users
         .where((u) => u['role'] == 'responder' && rosterIds.contains(u['id']))
         .toList();
-    final unitLoginRows = provider.unitAccounts
+    final unitLoginRows = provider.scopedUnitAccounts
         .where((u) => u['softDeletedAt'] == null)
         .toList()
       ..sort(

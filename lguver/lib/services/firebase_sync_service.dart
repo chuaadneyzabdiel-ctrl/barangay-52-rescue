@@ -211,6 +211,7 @@ class FirebaseSyncService {
     required String passwordHash,
     required String passwordSalt,
     required String createdBy,
+    String? barangayId,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     await _db.ref('unit_accounts/$loginId').set({
@@ -224,6 +225,7 @@ class FirebaseSyncService {
       'passwordSalt': passwordSalt,
       'passwordUpdatedAt': now,
       'createdBy': createdBy,
+      'barangayId': normalizeBarangayId(barangayId),
       'createdAt': now,
       'updatedAt': now,
       'softDeletedAt': null,
@@ -236,6 +238,7 @@ class FirebaseSyncService {
     String? unitType,
     String? status,
     bool? mustChangePassword,
+    String? barangayId,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     await _db.ref('unit_accounts/$loginId').update({
@@ -243,6 +246,7 @@ class FirebaseSyncService {
       if (unitType != null) 'unitType': unitType,
       if (status != null) 'status': status,
       if (mustChangePassword != null) 'mustChangePassword': mustChangePassword,
+      if (barangayId != null) 'barangayId': normalizeBarangayId(barangayId),
       'updatedAt': now,
     });
   }

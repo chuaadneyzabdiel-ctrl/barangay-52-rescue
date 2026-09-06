@@ -62,9 +62,51 @@ class RouteGeoUtils {
   /// Remaining distance (km) from driver's projected position to the end of the route.
   static double remainingDistanceKm(LatLng driver, List<LatLng> route) {
     final total = polylineLengthKm(route);
-    if (total <= 0) return 0;
+    if (total <= 0 || !total.isFinite) return 0;
     final along = distanceAlongRouteKm(driver, route);
-    return max(0.0, total - along);
+    if (!along.isFinite) return 0;
+    final rem = total - along;
+    if (!rem.isFinite || rem < 0) return 0;
+    return rem;
+  }
+
+  /// Polyline from the responder's projection on [route] to the destination.
+  /// Drops already-passed geometry so the line isn't left behind (matches responder nav).
+  static List<LatLng> remainingPolyline(LatLng driver, List<LatLng> route) {
+    if (route.length < 2) return List<LatLng>.from(route);
+    if (!driver.latitude.isFinite || !driver.longitude.isFinite) {
+      return List<LatLng>.from(route);
+    }
+    var bestI = 0;
+    var bestDist = double.infinity;
+    LatLng bestProj = route.first;
+    for (var i = 0; i < route.length - 1; i++) {
+      final a = route[i];
+      final b = route[i + 1];
+      if (!a.latitude.isFinite ||
+          !a.longitude.isFinite ||
+          !b.latitude.isFinite ||
+          !b.longitude.isFinite) {
+        continue;
+      }
+      final c = closestPointOnSegment(driver, a, b);
+      if (!c.latitude.isFinite || !c.longitude.isFinite) continue;
+      final d = GeoUtils.haversineKm(driver, c);
+      if (!d.isFinite) continue;
+      if (d < bestDist) {
+        bestDist = d;
+        bestI = i;
+        bestProj = c;
+      }
+    }
+    if (!bestDist.isFinite) return List<LatLng>.from(route);
+    if (bestDist > 0.15) return List<LatLng>.from(route);
+    final rest = route.sublist(bestI + 1);
+    if (rest.isEmpty) return [bestProj, route.last];
+    if (GeoUtils.haversineKm(bestProj, rest.first) < 0.005) {
+      return rest;
+    }
+    return [bestProj, ...rest];
   }
 
   static double _levelMultiplier(TrafficLevel level) {

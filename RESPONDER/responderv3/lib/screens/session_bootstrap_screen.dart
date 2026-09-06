@@ -1,11 +1,18 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/rescue_provider.dart';
 import 'citizen/sos_screen.dart';
 import 'dashboard/lgu_dashboard_screen.dart';
+import 'debug/responder_gps_joystick_screen.dart';
 import 'responder/responder_pending_approval_screen.dart';
 import 'role_selection_screen.dart';
+
+/// When launched with `--dart-define=OPEN_GPS_JOYSTICK=true` in a debug build,
+/// bootstrap opens the GPS joystick tool instead of the normal role flow.
+const bool kOpenGpsJoystickShortcut =
+    bool.fromEnvironment('OPEN_GPS_JOYSTICK', defaultValue: false);
 
 /// Restores last role (citizen / responder / LGU) from local storage.
 class SessionBootstrapScreen extends StatefulWidget {
@@ -25,6 +32,19 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
   Future<void> _route() async {
     final provider = context.read<RescueProvider>();
     await provider.loadCitizenProfile();
+    if (!mounted) return;
+
+    // Debug shortcut: Open GPS Joystick (Debug).bat
+    if (kDebugMode && kOpenGpsJoystickShortcut) {
+      provider.startFirebaseListeners();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => const ResponderGpsJoystickScreen(),
+        ),
+      );
+      return;
+    }
+
     final role = await provider.readPersistedRole();
     if (!mounted) return;
 

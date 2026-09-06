@@ -138,6 +138,40 @@ class RescueProvider extends ChangeNotifier {
   List<Map<String, dynamic>> get accountUsers => List.unmodifiable(_accountUsers);
   List<Map<String, dynamic>> get unitAccounts => List.unmodifiable(_unitAccounts);
 
+  /// Responder login accounts visible to this LGU (own barangay only when scoped).
+  List<Map<String, dynamic>> get scopedUnitAccounts {
+    if (!isLguScoped) return List.unmodifiable(_unitAccounts);
+    return _unitAccounts
+        .where((a) => _unitAccountBelongsToAssignedBarangay(a))
+        .toList(growable: false);
+  }
+
+  String? barangayIdForUnitAccount(Map<String, dynamic> account) {
+    final raw = account['barangayId']?.toString();
+    if (raw != null && raw.trim().isNotEmpty) {
+      return normalizeBarangayId(raw);
+    }
+    final unitId = account['responderUnitId']?.toString() ?? '';
+    if (unitId.isEmpty) return null;
+    final roster =
+        _rescueUnitsRoster.where((u) => u.id == unitId).firstOrNull;
+    return roster == null ? null : normalizeBarangayId(roster.barangayId);
+  }
+
+  bool _unitAccountBelongsToAssignedBarangay(Map<String, dynamic> account) {
+    final bid = barangayIdForUnitAccount(account);
+    return bid != null && bid == assignedBarangayId;
+  }
+
+  void _ensureUnitAccountOwned(Map<String, dynamic> account) {
+    if (!isLguScoped) return;
+    if (!_unitAccountBelongsToAssignedBarangay(account)) {
+      throw StateError(
+        'You can only manage responder accounts from Barangay $assignedBarangayId.',
+      );
+    }
+  }
+
   ResponseUnitStatus responseUnitStatusForUnit(String unitId) {
     final fromCache = _accountUsers
         .where((u) => (u['id']?.toString() ?? '') == unitId)
@@ -386,7 +420,8 @@ class RescueProvider extends ChangeNotifier {
   List<SOSRequest> get pendingRequests {
     final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
     final unitBarangay = _responderUnitBarangayId;
-    if (unitBarangay == null) return pending.toList();
+    // No unit barangay yet → show nothing (avoid leaking every barangay's SOS).
+    if (unitBarangay == null) return const [];
     final unit = _currentResponderUnit ??
         _rescueUnitsRoster
             .where((u) => u.id == _currentResponderSessionUnitId)
@@ -394,7 +429,7 @@ class RescueProvider extends ChangeNotifier {
     return pending.where((r) {
       if (r.isOwnedByBarangay(unitBarangay)) return true;
       if (!r.isVisibleToBarangay(unitBarangay)) return false;
-      if (unit == null) return true;
+      if (unit == null) return false;
       return r.allowsAssistingUnitType(unitBarangay, unit.type);
     }).toList();
   }
@@ -1268,6 +1303,7 @@ class RescueProvider extends ChangeNotifier {
       passwordHash: hash,
       passwordSalt: salt,
       createdBy: createdBy,
+      barangayId: roster.barangayId,
     );
     await _firebaseSync.logAuditEvent(
       action: 'CREATE_UNIT_ACCOUNT',
@@ -1288,6 +1324,7 @@ class RescueProvider extends ChangeNotifier {
   }) async {
     final account = await _firebaseSync.getUnitAccountByLoginId(loginId);
     if (account == null) throw StateError('Account not found.');
+    _ensureUnitAccountOwned(account);
     final tempPassword = (newTemporaryPassword?.trim().isNotEmpty == true
         ? newTemporaryPassword!.trim()
         : PasswordUtils.generateTemporaryPassword());
@@ -1320,7 +1357,11 @@ class RescueProvider extends ChangeNotifier {
     String? status,
     bool? mustChangePassword,
   }) async {
+    final existing = await _firebaseSync.getUnitAccountByLoginId(loginId);
+    if (existing == null) throw StateError('Account not found.');
+    _ensureUnitAccountOwned(existing);
     String? unitType;
+    String? barangayId;
     String? wireStatus = status?.trim();
     if (wireStatus != null && wireStatus.isNotEmpty) {
       final lower = wireStatus.toLowerCase();
@@ -1338,6 +1379,7 @@ class RescueProvider extends ChangeNotifier {
       if (roster == null) throw StateError('Response unit not found.');
       _ensureEmergencyUnitAssignable(roster);
       unitType = roster.type.name;
+      barangayId = roster.barangayId;
     }
     await _firebaseSync.updateUnitAccount(
       loginId,
@@ -1345,6 +1387,7 @@ class RescueProvider extends ChangeNotifier {
       unitType: unitType,
       status: wireStatus,
       mustChangePassword: mustChangePassword,
+      barangayId: barangayId,
     );
     await _firebaseSync.logAuditEvent(
       action: 'UPDATE_UNIT_ACCOUNT',
@@ -1365,6 +1408,9 @@ class RescueProvider extends ChangeNotifier {
     if (_currentResponderUnitLoginId == loginId) {
       throw StateError('Cannot delete currently logged-in responder account.');
     }
+    final existing = await _firebaseSync.getUnitAccountByLoginId(loginId);
+    if (existing == null) throw StateError('Account not found.');
+    _ensureUnitAccountOwned(existing);
     await _firebaseSync.softDeleteUnitAccount(loginId);
     await _firebaseSync.logAuditEvent(
       action: 'DELETE_UNIT_ACCOUNT',
@@ -1968,6 +2014,16 @@ class RescueProvider extends ChangeNotifier {
     }
     if (sos == null) {
       throw StateError('SOS request "$sosId" not found.');
+    }
+    final unitBarangay = normalizeBarangayId(unit.barangayId);
+    if (!sos.isOwnedByBarangay(unitBarangay)) {
+      if (!sos.isVisibleToBarangay(unitBarangay) ||
+          !sos.allowsAssistingUnitType(unitBarangay, unit.type)) {
+        throw StateError(
+          'This SOS is not available to Barangay $unitBarangay. '
+          'Mutual aid must be accepted by your command center first.',
+        );
+      }
     }
     if (!canUnitHandleSos(unit.type, sos.sosType)) {
       throw StateError(

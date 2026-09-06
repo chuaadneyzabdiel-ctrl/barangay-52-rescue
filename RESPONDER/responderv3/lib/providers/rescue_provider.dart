@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -73,6 +74,19 @@ class RescueProvider extends ChangeNotifier {
   // GPS upload timer for responders
   Timer? _gpsUploadTimer;
   Timer? _responderSessionHeartbeatTimer;
+  Timer? _gpsSpoofPushTimer;
+
+  // Debug-only GPS spoof (never auto-enabled; gated by kDebugMode in getters).
+  bool _gpsSpoofEnabled = false;
+  String? _gpsSpoofUnitId;
+  LatLng? _gpsSpoofPosition;
+  double _gpsSpoofSpeedKmh = 30;
+  DateTime? _lastGpsSpoofPushAt;
+  bool _gpsSpoofPushInFlight = false;
+  bool _gpsSpoofPushPending = false;
+  String? _lastGpsSpoofError;
+  /// Unit IDs currently locked by the debug joystick (other Chrome tab).
+  Set<String> _remoteGpsSpoofUnitIds = {};
 
   // Persisted active SOS (citizen) — restored when app reopens
   String? _activeSosId;
@@ -158,6 +172,7 @@ class RescueProvider extends ChangeNotifier {
   }
   String? get currentResponderUnitLoginId => _currentResponderUnitLoginId;
   String? get currentResponderSessionId => _currentResponderSessionId;
+  String? get currentResponderSessionUnitId => _currentResponderSessionUnitId;
 
   RescueProvider({
     AStarRoutingService? routingService,
@@ -245,6 +260,7 @@ class RescueProvider extends ChangeNotifier {
           loginId: loginId,
           responderUnitId: unitId,
           sessionId: sessionId,
+          ttlMs: 120 * 1000,
         );
       } catch (_) {
         // Best-effort heartbeat; validity checks enforce safety on actions.
@@ -273,6 +289,7 @@ class RescueProvider extends ChangeNotifier {
         loginId: loginId,
         responderUnitId: responderUnitId,
         sessionId: sessionId,
+        ttlMs: 120 * 1000,
       );
     } catch (_) {}
     final ok = await _firebaseSync.isResponderSessionValid(
@@ -305,17 +322,262 @@ class RescueProvider extends ChangeNotifier {
 
   List<SOSRequest> get sosRequests => List.unmodifiable(_sosRequests);
   /// Only requests that should appear on the map (pending, dispatched, inProgress).
-  List<SOSRequest> get activeSosRequests =>
-      _sosRequests.where((r) => r.isActive).toList();
+  List<SOSRequest> get activeSosRequests {
+    final list = _sosRequests.where((r) => r.isActive);
+    final unitBarangay = _responderUnitBarangayId;
+    if (unitBarangay == null) {
+      // Responder without a resolved unit barangay must not see every SOS.
+      if (_currentRole == UserRole.responder) return const [];
+      return list.toList();
+    }
+    return list.where((r) => r.isVisibleToBarangay(unitBarangay)).toList();
+  }
   List<SOSRequest> get sosHistory => List.unmodifiable(_sosHistory);
   Map<String, StandbyPoint> get relocationSuggestions =>
       Map.unmodifiable(_relocationSuggestions);
   LocationService get locationService => _locationService;
   FirebaseSyncService get firebaseSync => _firebaseSync;
+
+  /// Debug-only GPS spoof. Always false in release builds.
+  bool get isGpsSpoofEnabled => kDebugMode && _gpsSpoofEnabled;
+  String? get gpsSpoofUnitId => isGpsSpoofEnabled ? _gpsSpoofUnitId : null;
+  LatLng? get gpsSpoofPosition => isGpsSpoofEnabled ? _gpsSpoofPosition : null;
+  double get gpsSpoofSpeedKmh => _gpsSpoofSpeedKmh.clamp(1, 120);
+  String? get lastGpsSpoofError => _lastGpsSpoofError;
+  DateTime? get lastGpsSpoofPushAt =>
+      isGpsSpoofEnabled ? _lastGpsSpoofPushAt : null;
+
+  /// Units available to spoof: live GPS first, then roster fallbacks.
+  List<RescueUnit> get spoofableResponderUnits {
+    final byId = <String, RescueUnit>{};
+    for (final u in _rescueUnitsRoster) {
+      byId[u.id] = u;
+    }
+    for (final u in _rescueUnits) {
+      byId[u.id] = u;
+    }
+    final list = byId.values.toList()
+      ..sort((a, b) {
+        final aLive = isUnitOnline(a.id);
+        final bLive = isUnitOnline(b.id);
+        if (aLive != bLive) return aLive ? -1 : 1;
+        return a.callSign.compareTo(b.callSign);
+      });
+    return list;
+  }
+
+  void setGpsSpoofSpeedKmh(double kmh) {
+    if (!kDebugMode) return;
+    _gpsSpoofSpeedKmh = kmh.clamp(1, 120);
+    notifyListeners();
+  }
+
+  void _mergeGpsSpoofIntoLiveUnits() {
+    if (!isGpsSpoofEnabled ||
+        _gpsSpoofUnitId == null ||
+        _gpsSpoofPosition == null) {
+      return;
+    }
+    final id = _gpsSpoofUnitId!;
+    final base = _rescueUnits.where((u) => u.id == id).firstOrNull ??
+        _rescueUnitsRoster.where((u) => u.id == id).firstOrNull;
+    if (base == null) return;
+    final spoofed = RescueUnit(
+      id: base.id,
+      callSign: base.callSign,
+      type: base.type,
+      status: base.status,
+      position: _gpsSpoofPosition!,
+      assignedSOSId: base.assignedSOSId,
+      stationId: base.stationId,
+      barangayId: base.barangayId,
+    );
+    _rescueUnits = [
+      for (final u in _rescueUnits)
+        if (u.id != id) u,
+      spoofed,
+    ];
+  }
+
+  /// When the joystick runs in another tab, mirror Firebase spoof into
+  /// [currentPosition] so dispatch/nav maps move without a refresh.
+  /// Production GPS never sets debugGpsSpoof, so this is a no-op for real runs.
+  void _adoptRemoteSpoofIntoCurrentPosition() {
+    if (isGpsSpoofEnabled) return;
+    final unitId =
+        _currentResponderSessionUnitId ?? _currentResponderUnit?.id;
+    if (unitId == null || !_remoteGpsSpoofUnitIds.contains(unitId)) return;
+    final live = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+    if (live == null) return;
+    _currentPosition = live.position;
+    if (_currentResponderUnit?.id == unitId) {
+      _currentResponderUnit!.position = live.position;
+    }
+  }
+
+  bool _isSessionUnitRemoteSpoofed() {
+    final unitId =
+        _currentResponderSessionUnitId ?? _currentResponderUnit?.id;
+    return unitId != null && _remoteGpsSpoofUnitIds.contains(unitId);
+  }
+
+  Future<void> enableGpsSpoof(String unitId) async {
+    if (!kDebugMode) return;
+    final unit = _resolveUnitForDispatch(unitId) ??
+        spoofableResponderUnits.where((u) => u.id == unitId).firstOrNull;
+    if (unit == null) {
+      throw StateError('Unit not found for GPS spoof.');
+    }
+    _gpsSpoofEnabled = true;
+    _gpsSpoofUnitId = unitId;
+    _gpsSpoofPosition = unit.position;
+    _lastGpsSpoofError = null;
+    if (_currentResponderSessionUnitId == unitId ||
+        _currentResponderUnit?.id == unitId) {
+      _currentPosition = _gpsSpoofPosition;
+    }
+    _mergeGpsSpoofIntoLiveUnits();
+    _ensureGpsSpoofPushTimer();
+    await _pushGpsSpoofLocation(force: true);
+    notifyListeners();
+  }
+
+  Future<void> disableGpsSpoof() async {
+    final unitId = _gpsSpoofUnitId;
+    _gpsSpoofEnabled = false;
+    _gpsSpoofUnitId = null;
+    _gpsSpoofPosition = null;
+    _lastGpsSpoofError = null;
+    _gpsSpoofPushTimer?.cancel();
+    _gpsSpoofPushTimer = null;
+    if (unitId != null) {
+      try {
+        await _firebaseSync.clearUnitGpsSpoofLock(unitId);
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+  /// Turn spoof off and resume device GPS for the logged-in unit if any.
+  Future<void> resetGpsSpoofToReal() async {
+    await disableGpsSpoof();
+    try {
+      final pos = await _locationService.getCurrentPosition();
+      if (pos != null) {
+        _currentPosition = pos;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// Move spoofed pin by [northMeters] / [eastMeters] (joystick nudge).
+  void nudgeGpsSpoof({
+    required double northMeters,
+    required double eastMeters,
+  }) {
+    if (!isGpsSpoofEnabled || _gpsSpoofPosition == null) return;
+    final lat = _gpsSpoofPosition!.latitude;
+    const metersPerDegLat = 111320.0;
+    final metersPerDegLng =
+        111320.0 * cos(lat * pi / 180).abs().clamp(0.2, 1.0);
+    _gpsSpoofPosition = LatLng(
+      lat + northMeters / metersPerDegLat,
+      _gpsSpoofPosition!.longitude + eastMeters / metersPerDegLng,
+    );
+    if (_gpsSpoofUnitId != null &&
+        (_currentResponderSessionUnitId == _gpsSpoofUnitId ||
+            _currentResponderUnit?.id == _gpsSpoofUnitId)) {
+      _currentPosition = _gpsSpoofPosition;
+    }
+    _mergeGpsSpoofIntoLiveUnits();
+    notifyListeners();
+    unawaited(_pushGpsSpoofLocation());
+  }
+
+  /// Continuous motion: apply velocity for [dt] at current spoof speed and stick.
+  void applyGpsSpoofStick({
+    required double stickX,
+    required double stickY,
+    required double dtSeconds,
+  }) {
+    if (!isGpsSpoofEnabled) return;
+    final mag = sqrt(stickX * stickX + stickY * stickY);
+    if (mag < 0.08 || dtSeconds <= 0) return;
+    final nx = stickX / mag;
+    final ny = -stickY / mag; // screen Y down → north up
+    final speed = gpsSpoofSpeedKmh * mag.clamp(0.0, 1.0);
+    final meters = speed * 1000 / 3600 * dtSeconds;
+    nudgeGpsSpoof(
+      northMeters: ny * meters,
+      eastMeters: nx * meters,
+    );
+  }
+
+  void _ensureGpsSpoofPushTimer() {
+    _gpsSpoofPushTimer?.cancel();
+    if (!isGpsSpoofEnabled) return;
+    // Keep heartbeat fresh so other clients keep the unit "online".
+    _gpsSpoofPushTimer = Timer.periodic(const Duration(milliseconds: 800), (_) {
+      unawaited(_pushGpsSpoofLocation(force: true));
+    });
+  }
+
+  Future<void> _pushGpsSpoofLocation({bool force = false}) async {
+    if (!isGpsSpoofEnabled) return;
+    final unitId = _gpsSpoofUnitId;
+    final pos = _gpsSpoofPosition;
+    if (unitId == null || pos == null) return;
+
+    final now = DateTime.now();
+    if (!force &&
+        _lastGpsSpoofPushAt != null &&
+        now.difference(_lastGpsSpoofPushAt!) < const Duration(milliseconds: 350)) {
+      _gpsSpoofPushPending = true;
+      return;
+    }
+    if (_gpsSpoofPushInFlight) {
+      _gpsSpoofPushPending = true;
+      return;
+    }
+    _gpsSpoofPushInFlight = true;
+    _gpsSpoofPushPending = false;
+    _lastGpsSpoofPushAt = now;
+
+    try {
+      final unit = _resolveUnitForDispatch(unitId);
+      if (unit == null) {
+        _lastGpsSpoofError = 'Unit "$unitId" not found while pushing spoof GPS.';
+        notifyListeners();
+        return;
+      }
+      unit.position = pos;
+      if (_currentResponderUnit?.id == unitId) {
+        setCurrentResponderUnit(unit);
+      }
+      await _firebaseSync.updateUnitLocation(
+        unit,
+        useClientTimestamp: true,
+        gpsSpoofActive: true,
+      );
+      _lastGpsSpoofError = null;
+      _mergeGpsSpoofIntoLiveUnits();
+      notifyListeners();
+    } catch (e) {
+      _lastGpsSpoofError = e.toString();
+      notifyListeners();
+    } finally {
+      _gpsSpoofPushInFlight = false;
+      if (_gpsSpoofPushPending && isGpsSpoofEnabled) {
+        _gpsSpoofPushPending = false;
+        unawaited(_pushGpsSpoofLocation(force: true));
+      }
+    }
+  }
   List<SOSRequest> get pendingRequests {
     final pending = _sosRequests.where((r) => r.status == SOSStatus.pending);
     final unitBarangay = _responderUnitBarangayId;
-    if (unitBarangay == null) return pending.toList();
+    // No unit barangay yet → show nothing (avoid leaking every barangay's SOS).
+    if (unitBarangay == null) return const [];
     final unit = _currentResponderUnit ??
         _rescueUnitsRoster
             .where((u) => u.id == _currentResponderSessionUnitId)
@@ -323,7 +585,7 @@ class RescueProvider extends ChangeNotifier {
     return pending.where((r) {
       if (r.isOwnedByBarangay(unitBarangay)) return true;
       if (!r.isVisibleToBarangay(unitBarangay)) return false;
-      if (unit == null) return true;
+      if (unit == null) return false;
       return r.allowsAssistingUnitType(unitBarangay, unit.type);
     }).toList();
   }
@@ -460,6 +722,7 @@ class RescueProvider extends ChangeNotifier {
 
   /// Ends responder session: offline unit, clear GPS upload, session keys.
   Future<void> responderLogout(String unitId) async {
+    await disableGpsSpoof();
     final loginId = _currentResponderUnitLoginId;
     final sessionUnitId = _currentResponderSessionUnitId ?? unitId;
     final sessionId = _currentResponderSessionId;
@@ -502,13 +765,18 @@ class RescueProvider extends ChangeNotifier {
     _listenersStarted = true;
 
     _unitsSub = _firebaseSync.watchAllUnitLocations().listen(
-      (units) {
-        _rescueUnits = units;
+      (event) {
+        _rescueUnits = event.units;
+        _remoteGpsSpoofUnitIds = event.spoofLockedUnitIds;
+        _mergeGpsSpoofIntoLiveUnits();
+        _adoptRemoteSpoofIntoCurrentPosition();
         _refreshRelocations();
         notifyListeners();
       },
       onError: (e, st) {
         _rescueUnits = [];
+        _remoteGpsSpoofUnitIds = {};
+        _mergeGpsSpoofIntoLiveUnits();
         notifyListeners();
       },
     );
@@ -628,6 +896,14 @@ class RescueProvider extends ChangeNotifier {
       // Use a smaller distance filter so camera follow / markers feel smoother.
       _locationService.startTracking(distanceFilterMeters: 2);
       _locationSub = _locationService.positionStream.listen((pos) {
+        // While spoofing this session unit, ignore device GPS.
+        if (isGpsSpoofEnabled &&
+            (_gpsSpoofUnitId == _currentResponderSessionUnitId ||
+                _gpsSpoofUnitId == _currentResponderUnit?.id)) {
+          return;
+        }
+        // Joystick in another tab owns this unit — don't fight it with browser GPS.
+        if (_isSessionUnitRemoteSpoofed()) return;
         _currentPosition = pos;
         notifyListeners();
       });
@@ -644,10 +920,15 @@ class RescueProvider extends ChangeNotifier {
     _gpsUploadTimer?.cancel();
 
     Future<void> pushOnce() async {
+      // Spoof path owns Firebase writes for this unit while enabled.
+      if (isGpsSpoofEnabled && _gpsSpoofUnitId == unitId) return;
+      if (_remoteGpsSpoofUnitIds.contains(unitId)) return;
       RescueUnit? unit =
           knownUnit?.id == unitId ? knownUnit : _resolveUnitForDispatch(unitId);
       if (unit == null) return;
-      if (_currentPosition != null) unit.position = _currentPosition!;
+      if (_currentPosition != null) {
+        unit.position = _currentPosition!;
+      }
       setCurrentResponderUnit(unit);
       try {
         await _firebaseSync.updateUnitLocation(unit);
@@ -930,6 +1211,7 @@ class RescueProvider extends ChangeNotifier {
       passwordHash: hash,
       passwordSalt: salt,
       createdBy: createdBy,
+      barangayId: roster.barangayId,
     );
     await _firebaseSync.logAuditEvent(
       action: 'CREATE_UNIT_ACCOUNT',
@@ -999,14 +1281,23 @@ class RescueProvider extends ChangeNotifier {
           _rescueUnitsRoster.where((u) => u.id == responderUnitId).firstOrNull;
       if (roster == null) throw StateError('Response unit not found.');
       unitType = roster.type.name;
+      await _firebaseSync.updateUnitAccount(
+        loginId,
+        responderUnitId: responderUnitId,
+        unitType: unitType,
+        status: wireStatus,
+        mustChangePassword: mustChangePassword,
+        barangayId: roster.barangayId,
+      );
+    } else {
+      await _firebaseSync.updateUnitAccount(
+        loginId,
+        responderUnitId: responderUnitId,
+        unitType: unitType,
+        status: wireStatus,
+        mustChangePassword: mustChangePassword,
+      );
     }
-    await _firebaseSync.updateUnitAccount(
-      loginId,
-      responderUnitId: responderUnitId,
-      unitType: unitType,
-      status: wireStatus,
-      mustChangePassword: mustChangePassword,
-    );
     await _firebaseSync.logAuditEvent(
       action: 'UPDATE_UNIT_ACCOUNT',
       performedBy: performedBy,
@@ -1072,6 +1363,7 @@ class RescueProvider extends ChangeNotifier {
       loginId: cleanId,
       responderUnitId: responderUnitId,
       sessionId: sessionId,
+      ttlMs: 120 * 1000,
       deviceInfo: kIsWeb ? 'web' : 'mobile',
     );
     if (!lockRes.success) {
@@ -1228,82 +1520,172 @@ class RescueProvider extends ChangeNotifier {
     required String sosId,
     required String unitId,
   }) async {
+    // Session lock can flake on web; never block cancel of our own assignment.
     if (_currentRole == UserRole.responder) {
-      final lockOk = await ensureResponderSessionIsValid(unitId: unitId);
+      final lockOk = await ensureResponderSessionIsValid(
+        unitId: unitId,
+        logOnFailure: false,
+      );
       if (!lockOk) {
-        throw StateError('Session is active elsewhere. Please sign in again.');
+        // Best-effort heartbeat; still proceed so Cancel always works.
+        try {
+          final loginId = _currentResponderUnitLoginId;
+          final sessionId = _currentResponderSessionId;
+          if (loginId != null && sessionId != null) {
+            await _firebaseSync.heartbeatResponderSessionLocks(
+              loginId: loginId,
+              responderUnitId: unitId,
+              sessionId: sessionId,
+              ttlMs: 120 * 1000,
+            );
+          }
+        } catch (_) {}
       }
     }
-    final request = _sosRequests.where((r) => r.id == sosId).firstOrNull;
-    if (request == null) return;
-    if (request.assignedUnitId != unitId) return;
+
+    var request = _sosRequests.where((r) => r.id == sosId).firstOrNull;
+    request ??= await _firebaseSync.getActiveSOSById(sosId);
+
+    if (request == null) {
+      await _firebaseSync.removeActiveSOS(sosId);
+      await _clearUnitAssignmentAfterAbort(unitId);
+      _sosRequests = _sosRequests.where((r) => r.id != sosId).toList();
+      clearRoute();
+      await clearResponderNavigationIfMatches(sosId);
+      _refreshRelocations();
+      notifyListeners();
+      return;
+    }
+
+    // Only block if clearly assigned to a *different* live unit.
+    if (request.assignedUnitId != null &&
+        request.assignedUnitId!.isNotEmpty &&
+        request.assignedUnitId != unitId) {
+      throw StateError(
+        'This SOS is assigned to another unit (${request.assignedUnitId}).',
+      );
+    }
 
     await _firebaseSync.resolveSOS(request);
+    await _clearUnitAssignmentAfterAbort(unitId);
 
-    final unit = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+    _sosRequests = _sosRequests.where((r) => r.id != sosId).toList();
+    clearRoute();
+    await clearResponderNavigationIfMatches(sosId);
+    _refreshRelocations();
+    notifyListeners();
+  }
+
+  Future<void> _clearUnitAssignmentAfterAbort(String unitId) async {
+    final unit = _resolveUnitForDispatch(unitId);
     if (unit != null) {
       unit.status = UnitStatus.idle;
       unit.assignedSOSId = null;
-      await _firebaseSync.updateUnitLocation(unit);
+      try {
+        await _firebaseSync.updateUnitLocation(unit, force: true);
+      } catch (_) {}
+    } else {
+      try {
+        await _firebaseSync.clearUnitAssignment(unitId);
+      } catch (_) {}
     }
     if (_currentResponderUnit?.id == unitId) {
       _currentResponderUnit?.status = UnitStatus.idle;
       _currentResponderUnit?.assignedSOSId = null;
     }
-
-    clearRoute();
-    await clearResponderNavigationIfMatches(sosId);
-    notifyListeners();
   }
 
   /// Call when rescuer arrives and victim is assisted: mark completed, move to history, remove from map.
   Future<void> completeSOS(SOSRequest request) async {
+    final unitId = request.assignedUnitId ?? _currentResponderSessionUnitId;
+    // Session lock can flake on web; never block completing our own assignment.
     if (_currentRole == UserRole.responder) {
       final lockOk = await ensureResponderSessionIsValid(
-        unitId: request.assignedUnitId,
+        unitId: unitId,
+        logOnFailure: false,
       );
       if (!lockOk) {
-        throw StateError('Session is active elsewhere. Please sign in again.');
+        try {
+          final loginId = _currentResponderUnitLoginId;
+          final sessionId = _currentResponderSessionId;
+          if (loginId != null && unitId != null && sessionId != null) {
+            await _firebaseSync.heartbeatResponderSessionLocks(
+              loginId: loginId,
+              responderUnitId: unitId,
+              sessionId: sessionId,
+              ttlMs: 120 * 1000,
+            );
+          }
+        } catch (_) {}
       }
     }
+
+    // Prefer a fresh copy from Firebase in case the in-memory SOS is stale.
+    var active = _sosRequests.where((r) => r.id == request.id).firstOrNull;
+    active ??= await _firebaseSync.getActiveSOSById(request.id);
+    final toComplete = active ?? request;
+
+    if (toComplete.assignedUnitId != null &&
+        toComplete.assignedUnitId!.isNotEmpty &&
+        unitId != null &&
+        toComplete.assignedUnitId != unitId &&
+        _currentRole == UserRole.responder) {
+      throw StateError(
+        'This SOS is assigned to another unit (${toComplete.assignedUnitId}).',
+      );
+    }
+
     // Compute evaluation metrics for this incident.
     final now = DateTime.now();
     double? unitDistanceKm;
-    if (request.assignedUnitId != null) {
-      final unit = _rescueUnits
-          .where((u) => u.id == request.assignedUnitId)
-          .firstOrNull;
+    final resolveId = toComplete.assignedUnitId ?? unitId;
+    if (resolveId != null) {
+      final unit = _resolveUnitForDispatch(resolveId);
       if (unit != null) {
-        unitDistanceKm = GeoUtils.haversineKm(unit.position, request.location);
+        final dist = GeoUtils.haversineKm(unit.position, toComplete.location);
+        unitDistanceKm = dist.isFinite ? dist : null;
         unit.status = UnitStatus.idle;
         unit.assignedSOSId = null;
-        await _firebaseSync.updateUnitLocation(unit);
+        try {
+          await _firebaseSync.updateUnitLocation(unit, force: true);
+        } catch (_) {}
+      } else {
+        try {
+          await _firebaseSync.clearUnitAssignment(resolveId);
+        } catch (_) {}
+      }
+      if (_currentResponderUnit?.id == resolveId) {
+        _currentResponderUnit?.status = UnitStatus.idle;
+        _currentResponderUnit?.assignedSOSId = null;
       }
     }
 
     final responseTimeSeconds =
-        now.difference(request.createdAt).inSeconds.clamp(0, 24 * 60 * 60);
+        now.difference(toComplete.createdAt).inSeconds.clamp(0, 24 * 60 * 60);
     final relocationStrategy =
-        _relocationStrategyBySosId.remove(request.id) ?? 'unknown';
+        _relocationStrategyBySosId.remove(toComplete.id) ?? 'unknown';
 
     await _firebaseSync.completeSOS(
-      request,
+      toComplete,
       extraMetrics: {
         'responseTimeSeconds': responseTimeSeconds,
         if (unitDistanceKm != null)
           'unitDistanceKmAtCompletion': unitDistanceKm,
         'relocationStrategy': relocationStrategy,
-        'osrmDistanceKm': _osrmDistanceKm,
-        'osrmEtaMinutes': _osrmEtaMinutes,
-        'safeDistanceKm': _safeDistanceKm,
-        'safeEtaMinutes': _safeEtaMinutes,
+        if (_osrmDistanceKm.isFinite) 'osrmDistanceKm': _osrmDistanceKm,
+        if (_osrmEtaMinutes.isFinite) 'osrmEtaMinutes': _osrmEtaMinutes,
+        if (_safeDistanceKm.isFinite) 'safeDistanceKm': _safeDistanceKm,
+        if (_safeEtaMinutes.isFinite) 'safeEtaMinutes': _safeEtaMinutes,
         'osrmHazardCrossings': _osrmHazardCrossings,
         'safeHazardCrossings': _safeHazardCrossings,
       },
     );
 
+    // Drop from local list immediately so markers/waypoints disappear without waiting for stream.
+    _sosRequests = _sosRequests.where((r) => r.id != toComplete.id).toList();
     clearRoute();
-    await clearResponderNavigationIfMatches(request.id);
+    await clearResponderNavigationIfMatches(toComplete.id);
+    _refreshRelocations();
     notifyListeners();
   }
 
@@ -1458,14 +1840,25 @@ class RescueProvider extends ChangeNotifier {
 
   /// Live GPS unit, else the in-memory responder session unit, else roster + GPS/station.
   RescueUnit? _resolveUnitForDispatch(String unitId) {
+    final spoofPos = (isGpsSpoofEnabled && _gpsSpoofUnitId == unitId)
+        ? _gpsSpoofPosition
+        : null;
     final live = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
     if (live != null) {
-      if (_currentPosition != null) live.position = _currentPosition!;
+      if (spoofPos != null) {
+        live.position = spoofPos;
+      } else if (_currentPosition != null) {
+        live.position = _currentPosition!;
+      }
       return live;
     }
     if (_currentResponderUnit?.id == unitId) {
       final unit = _currentResponderUnit!;
-      if (_currentPosition != null) unit.position = _currentPosition!;
+      if (spoofPos != null) {
+        unit.position = spoofPos;
+      } else if (_currentPosition != null) {
+        unit.position = _currentPosition!;
+      }
       return unit;
     }
     final roster = _rescueUnitsRoster.where((u) => u.id == unitId).firstOrNull;
@@ -1475,7 +1868,7 @@ class RescueProvider extends ChangeNotifier {
       callSign: roster.callSign,
       type: roster.type,
       status: UnitStatus.idle,
-      position: _currentPosition ?? roster.position,
+      position: spoofPos ?? _currentPosition ?? roster.position,
       stationId: roster.stationId,
       barangayId: roster.barangayId,
     );
@@ -1503,6 +1896,16 @@ class RescueProvider extends ChangeNotifier {
     }
     if (sos == null) {
       throw StateError('SOS request "$sosId" not found.');
+    }
+    final unitBarangay = normalizeBarangayId(unit.barangayId);
+    if (!sos.isOwnedByBarangay(unitBarangay)) {
+      if (!sos.isVisibleToBarangay(unitBarangay) ||
+          !sos.allowsAssistingUnitType(unitBarangay, unit.type)) {
+        throw StateError(
+          'This SOS is not available to Barangay $unitBarangay. '
+          'Mutual aid must be accepted by your command center first.',
+        );
+      }
     }
     if (!canUnitHandleSos(unit.type, sos.sosType)) {
       throw StateError(
@@ -1825,10 +2228,10 @@ class RescueProvider extends ChangeNotifier {
         throw StateError('Session is active elsewhere. Please sign in again.');
       }
     }
-    final unit = _rescueUnits.where((u) => u.id == unitId).firstOrNull;
+    final unit = _resolveUnitForDispatch(unitId);
     if (unit == null) return;
     unit.status = status;
-    await _firebaseSync.updateUnitLocation(unit);
+    await _firebaseSync.updateUnitLocation(unit, force: true);
     notifyListeners();
   }
 

@@ -57,7 +57,10 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
   bool _cameraFollowsDriver = true;
   StreamSubscription<LatLng>? _driverPosSub;
   Timer? _rerouteDebounce;
+  RescueProvider? _navProvider;
   bool _isComputingRoute = false;
+  bool _reroutePending = false;
+  LatLng? _pendingReroutePos;
   LatLng? _lastRerouteDriverPos;
   LatLng? _lastRerouteTarget;
   DateTime? _lastRerouteComputedAt;
@@ -222,42 +225,56 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
     });
   }
 
-  /// Debounced, deviation-triggered rerouting. Does not run on a fixed interval.
+  /// Debounced rerouting from [RescueProvider.currentPosition]
+  /// (device GPS and joystick spoof both update that value).
   void _watchDriverPositionForReroute() {
-    final provider = context.read<RescueProvider>();
-    _driverPosSub?.cancel();
-    _driverPosSub = provider.locationService.positionStream.listen((pos) {
-      if (!mounted) return;
-      if (_sosEnded) return;
+    _navProvider = context.read<RescueProvider>();
+    _navProvider!.addListener(_onProviderPositionForNav);
+    final pos = _navProvider!.currentPosition;
+    if (pos != null) {
       _checkArrival(pos);
-      // Debounce frequent GPS updates so "Rerouting..." isn't spammy.
-      _rerouteDebounce?.cancel();
-      _rerouteDebounce = Timer(const Duration(milliseconds: 900), () {
+      unawaited(_maybeReroute(pos));
+    }
+  }
+
+  void _onProviderPositionForNav() {
+    if (!mounted || _sosEnded) return;
+    final pos = _navProvider?.currentPosition;
+    if (pos == null) return;
+    _checkArrival(pos);
+    _rerouteDebounce?.cancel();
+    // Faster follow when the pin jumps (spoof / large GPS steps).
+    final last = _lastRerouteDriverPos;
+    final jumped =
+        last == null || GeoUtils.haversineKm(last, pos) > 0.08;
+    _rerouteDebounce = Timer(
+      jumped
+          ? const Duration(milliseconds: 250)
+          : const Duration(milliseconds: 700),
+      () {
         if (!mounted) return;
         _maybeReroute(pos);
-      });
-    });
+      },
+    );
   }
 
   Future<void> _maybeReroute(LatLng driverPos) async {
     if (!mounted || _arrived || _sosEnded) return;
-    if (_isComputingRoute) return;
+    if (_isComputingRoute) {
+      _reroutePending = true;
+      _pendingReroutePos = driverPos;
+      return;
+    }
     final provider = context.read<RescueProvider>();
     final route = provider.osrmRoute;
     final target = _routingToFacility && _selectedFacility != null
         ? _selectedFacility!.position
         : (_citizenLivePosition ?? widget.sosRequest.location);
 
-    // Hard throttle: don't recompute routes too frequently.
     final lastAt = _lastRerouteComputedAt;
-    if (lastAt != null &&
-        DateTime.now().difference(lastAt) < const Duration(seconds: 6)) {
-      return;
-    }
 
     final distToTargetKm = GeoUtils.haversineKm(driverPos, target);
 
-    // Deviation-based trigger: distance from driver to closest point in current OSRM route.
     double? minDistToRouteKm;
     if (route.length >= 2) {
       minDistToRouteKm = route
@@ -265,24 +282,31 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
           .reduce((a, b) => a < b ? a : b);
     }
 
-    // Movement-based trigger: avoids "stuck" due to GPS snapping to the same geometry.
     final movedKm = _lastRerouteDriverPos == null
         ? double.infinity
         : GeoUtils.haversineKm(_lastRerouteDriverPos!, driverPos);
 
-    // Target-based trigger: if the SOS location moved far, reroute so the route end follows it.
     final targetMovedKm = _lastRerouteTarget == null
         ? double.infinity
         : GeoUtils.haversineKm(_lastRerouteTarget!, target);
 
-    // Very close to target: only reroute on meaningful target movement (ignore jitter).
+    final farOffRoute =
+        minDistToRouteKm != null && minDistToRouteKm > 0.08; // ~80m
+    final bigJump = movedKm > 0.08;
+    if (!farOffRoute &&
+        !bigJump &&
+        lastAt != null &&
+        DateTime.now().difference(lastAt) < const Duration(seconds: 4)) {
+      return;
+    }
+
     if (distToTargetKm < 0.05 && targetMovedKm <= 0.03) return;
 
     final shouldReroute = route.length < 2 ||
         minDistToRouteKm == null ||
-        minDistToRouteKm > 0.03 || // ~30m deviation
-        movedKm > 0.03 || // moved more than ~30m since last reroute
-        targetMovedKm > 0.03; // target moved more than ~30m
+        minDistToRouteKm > 0.03 ||
+        movedKm > 0.03 ||
+        targetMovedKm > 0.03;
 
     if (!shouldReroute) return;
 
@@ -294,6 +318,14 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
       await provider.computeRoute(from: driverPos, to: target);
     } finally {
       if (mounted) setState(() => _isComputingRoute = false);
+      if (_reroutePending) {
+        final next = _pendingReroutePos;
+        _reroutePending = false;
+        _pendingReroutePos = null;
+        if (next != null && mounted && !_arrived && !_sosEnded) {
+          unawaited(_maybeReroute(next));
+        }
+      }
     }
   }
 
@@ -963,6 +995,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
         unawaited(context
             .read<RescueProvider>()
             .clearResponderNavigationIfMatches(widget.sosRequest.id));
+        context.read<RescueProvider>().clearRoute();
         setState(() {
           _sosEnded = true;
           _sosEndedReason = sos?.status == SOSStatus.cancelled ? 'cancelled' : 'completed';
@@ -1100,7 +1133,12 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
             sosId: widget.sosRequest.id,
             unitId: widget.responderUnit.id,
           );
-      if (mounted) Navigator.of(context).pop();
+      if (!mounted) return;
+      setState(() {
+        _sosEnded = true;
+        _sosEndedReason = 'cancelled';
+      });
+      Navigator.of(context).pop(true);
     } catch (e) {
       await _handleResponderActionError(e);
     } finally {
@@ -1120,6 +1158,8 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
     _driverPosSub?.cancel();
     _citizenLocationSub?.cancel();
     _approvalSub?.cancel();
+    _navProvider?.removeListener(_onProviderPositionForNav);
+    _navProvider = null;
     _tts.stop();
     _mapController.dispose();
     super.dispose();
@@ -1233,52 +1273,40 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                   ),
 
                   if (!_arrived && !_sosEnded) ...[
-                    // Road route: mock traffic colors (clear=blue, heavy=red) or solid blue.
-                    if (provider.osrmRoute.length >= 2) ...[
-                      // Keep a continuous base line to avoid visual breaks between traffic segments.
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: provider.osrmRoute,
-                            color: const Color(0xFF1565C0),
-                            strokeWidth: 8,
-                          ),
-                        ],
-                      ),
-                      if (mapTheme.showRouteTrafficOverlay &&
-                          provider.routeTrafficSegments.isNotEmpty)
-                        for (final seg in provider.routeTrafficSegments)
-                          PolylineLayer(
-                            polylines: [
-                              Polyline(
-                                points: seg.points,
-                                color: Colors.black.withValues(alpha: 0.55),
-                                strokeWidth: 11,
-                              ),
-                              Polyline(
-                                points: seg.points,
-                                color: _trafficSegmentColor(seg.level),
-                                strokeWidth: 8,
-                              ),
-                            ],
-                          )
-                      else
-                        PolylineLayer(
+                    // Road route ahead of the unit only (trim passed geometry).
+                    Builder(
+                      builder: (_) {
+                        final full = provider.osrmRoute;
+                        if (full.length < 2) return const SizedBox.shrink();
+                        final driver = provider.currentPosition;
+                        final ahead = driver == null
+                            ? full
+                            : RouteGeoUtils.remainingPolyline(driver, full);
+                        if (ahead.length < 2) return const SizedBox.shrink();
+                        return PolylineLayer(
                           polylines: [
                             Polyline(
-                              points: provider.osrmRoute,
+                              points: ahead,
                               color: const Color(0xFF1565C0),
-                              strokeWidth: 10,
+                              strokeWidth: 8,
                             ),
                           ],
-                        ),
-                    ],
+                        );
+                      },
+                    ),
                   ],
 
                   if (!_arrived && !_sosEnded && provider.osrmRoute.length >= 2)
                     Builder(
                       builder: (_) {
-                        final arrows = _staticRouteArrowMarkers(provider.osrmRoute);
+                        final driver = provider.currentPosition;
+                        final ahead = driver == null
+                            ? provider.osrmRoute
+                            : RouteGeoUtils.remainingPolyline(
+                                driver,
+                                provider.osrmRoute,
+                              );
+                        final arrows = _staticRouteArrowMarkers(ahead);
                         if (arrows.isEmpty) return const SizedBox.shrink();
                         return MarkerLayer(
                           markers: [
@@ -1403,7 +1431,8 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
         },
       ),
           _buildTopBar(),
-          if (_arrived && (!_isAmbulance || _atFacility)) _buildArrivalBanner(),
+          // Show Complete as soon as on-scene (patient) or at facility — not only after hospital.
+          if (_arrived && !_sosEnded) _buildArrivalBanner(),
           if (_sosEnded) _buildSOSEndedBanner(),
           if (_isComputingRoute)
             Positioned(
@@ -1445,13 +1474,14 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
           Positioned(
             bottom: MediaQuery.of(context).padding.bottom + ((_arrived || _sosEnded) ? 100 : 28),
             left: 16,
+            right: 16,
             child: Consumer<RescueProvider>(
               builder: (context, provider, _) {
+                if (_sosEnded) return const SizedBox.shrink();
+                // Don't cover the Complete SOS banner with Cancel.
+                if (_arrived) return const SizedBox.shrink();
                 final keepPickupActionVisible =
                     _isAmbulance && !_pickupConfirmed && _arrived && !_routingToFacility;
-                if (_sosEnded || (_arrived && !keepPickupActionVisible)) {
-                  return const SizedBox.shrink();
-                }
                 final target = _routingToFacility && _selectedFacility != null
                     ? _selectedFacility!.position
                     : (_citizenLivePosition ?? widget.sosRequest.location);
@@ -1462,18 +1492,22 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                 final isAmbulancePickupStep = _isAmbulance && !_pickupConfirmed;
                 final pickupReady = isAmbulancePickupStep && distKm <= 0.02; // 20m
                 final arriveReady = !isAmbulancePickupStep && distKm <= 0.03;
-                final showArrive = pickupReady || arriveReady;
-                final glow = showArrive;
-
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 350),
-                  curve: Curves.easeOut,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(28),
-                    boxShadow: glow
-                        ? [
+                final showArrive = (!_arrived && (pickupReady || arriveReady)) ||
+                    (keepPickupActionVisible && pickupReady);
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (showArrive)
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 350),
+                        curve: Curves.easeOut,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(28),
+                          boxShadow: [
                             BoxShadow(
-                              color: Colors.lightGreenAccent.withValues(alpha: 0.85),
+                              color: Colors.lightGreenAccent
+                                  .withValues(alpha: 0.85),
                               blurRadius: 20,
                               spreadRadius: 1,
                             ),
@@ -1481,34 +1515,46 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
                               color: Colors.green.withValues(alpha: 0.5),
                               blurRadius: 12,
                             ),
-                          ]
-                        : null,
-                  ),
-                  child: FloatingActionButton.extended(
-                    heroTag: 'arrive-or-cancel',
-                    onPressed: showArrive
-                        ? _markArrivedManually
-                        : (_isCancelling ? null : _confirmCancelResponse),
-                    backgroundColor:
-                        showArrive ? Colors.green.shade500 : Colors.red.shade600,
-                    icon: Icon(
-                      showArrive
-                          ? (isAmbulancePickupStep ? Icons.personal_injury : Icons.flag)
-                          : Icons.cancel,
-                      color: Colors.white,
-                    ),
-                    label: Text(
-                      showArrive
-                          ? (isAmbulancePickupStep
-                              ? 'Pickup Patient'
-                              : (_routingToFacility ? 'Arrive Facility' : 'Arrive'))
-                          : (_routingToFacility ? 'Cancel Hospital Route' : 'Cancel'),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
+                          ],
+                        ),
+                        child: FloatingActionButton.extended(
+                          heroTag: 'arrive-action',
+                          onPressed: _markArrivedManually,
+                          backgroundColor: Colors.green.shade500,
+                          icon: Icon(
+                            isAmbulancePickupStep
+                                ? Icons.personal_injury
+                                : Icons.flag,
+                            color: Colors.white,
+                          ),
+                          label: Text(
+                            isAmbulancePickupStep
+                                ? 'Confirm pickup'
+                                : (_routingToFacility
+                                    ? 'Arrive Facility'
+                                    : 'Arrive'),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (showArrive) const SizedBox(height: 10),
+                    FloatingActionButton.extended(
+                      heroTag: 'cancel-response',
+                      onPressed: _isCancelling ? null : _confirmCancelResponse,
+                      backgroundColor: Colors.red.shade600,
+                      icon: const Icon(Icons.cancel, color: Colors.white),
+                      label: Text(
+                        _isCancelling ? 'Cancelling…' : 'Cancel response',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 );
               },
             ),
@@ -2094,6 +2140,18 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
   }
 
   Widget _buildArrivalBanner() {
+    final needsPickupConfirm =
+        _isAmbulance && !_pickupConfirmed && !_routingToFacility && !_atFacility;
+    final atFacility = _routingToFacility || _atFacility;
+    final title = needsPickupConfirm
+        ? 'At patient — confirm pickup to start hospital transport.'
+        : _isAmbulance && atFacility
+            ? 'Arrived at facility — patient handed over? Mark complete.'
+            : 'Arrived — victim assisted? Mark as Completed to remove from map.';
+    final primaryLabel = needsPickupConfirm
+        ? (_isCompleting ? 'Starting…' : 'Confirm pickup')
+        : (_isCompleting ? 'Completing…' : 'Complete SOS');
+
     return Positioned(
       bottom: 32,
       left: 24,
@@ -2103,48 +2161,82 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Padding(
           padding: const EdgeInsets.all(20),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.check_circle, color: Colors.white, size: 32),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Arrived — victim assisted? Mark as Completed to remove from map.',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
+              Row(
+                children: [
+                  Icon(
+                    needsPickupConfirm
+                        ? Icons.personal_injury
+                        : Icons.check_circle,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                  ),
+                ],
               ),
-              ElevatedButton(
-                onPressed: _isCompleting
-                    ? null
-                    : () async {
-                        setState(() => _isCompleting = true);
-                        try {
-                          await context
-                              .read<RescueProvider>()
-                              .firebaseSync
-                              .updateDispatchProgress(
-                                widget.sosRequest.id,
-                                status: 'completed',
-                                phase: 'completed',
-                              );
-                          await context
-                              .read<RescueProvider>()
-                              .completeSOS(widget.sosRequest);
-                          if (context.mounted) Navigator.pop(context, true);
-                        } catch (e) {
-                          await _handleResponderActionError(e);
-                        } finally {
-                          if (mounted) setState(() => _isCompleting = false);
-                        }
-                      },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: Colors.green,
-                ),
-                child: const Text('Complete SOS'),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _isCompleting
+                          ? null
+                          : () async {
+                              if (needsPickupConfirm) {
+                                await _markArrivedManually();
+                                return;
+                              }
+                              setState(() => _isCompleting = true);
+                              try {
+                                final provider =
+                                    context.read<RescueProvider>();
+                                await provider.firebaseSync
+                                    .updateDispatchProgress(
+                                  widget.sosRequest.id,
+                                  status: 'completed',
+                                  phase: 'completed',
+                                );
+                                await provider.completeSOS(widget.sosRequest);
+                                if (!mounted) return;
+                                setState(() {
+                                  _sosEnded = true;
+                                  _sosEndedReason = 'completed';
+                                });
+                                Navigator.pop(context, true);
+                              } catch (e) {
+                                await _handleResponderActionError(e);
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _isCompleting = false);
+                                }
+                              }
+                            },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.green.shade800,
+                      ),
+                      child: Text(primaryLabel),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: _isCancelling ? null : _confirmCancelResponse,
+                    style: TextButton.styleFrom(foregroundColor: Colors.white),
+                    child: const Text('Cancel response'),
+                  ),
+                ],
               ),
             ],
           ),

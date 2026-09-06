@@ -195,6 +195,7 @@ class FirebaseSyncService {
     required String passwordHash,
     required String passwordSalt,
     required String createdBy,
+    String? barangayId,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     await _db.ref('unit_accounts/$loginId').set({
@@ -208,6 +209,7 @@ class FirebaseSyncService {
       'passwordSalt': passwordSalt,
       'passwordUpdatedAt': now,
       'createdBy': createdBy,
+      'barangayId': normalizeBarangayId(barangayId),
       'createdAt': now,
       'updatedAt': now,
       'softDeletedAt': null,
@@ -220,6 +222,7 @@ class FirebaseSyncService {
     String? unitType,
     String? status,
     bool? mustChangePassword,
+    String? barangayId,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     await _db.ref('unit_accounts/$loginId').update({
@@ -227,6 +230,7 @@ class FirebaseSyncService {
       if (unitType != null) 'unitType': unitType,
       if (status != null) 'status': status,
       if (mustChangePassword != null) 'mustChangePassword': mustChangePassword,
+      if (barangayId != null) 'barangayId': normalizeBarangayId(barangayId),
       'updatedAt': now,
     });
   }
@@ -469,7 +473,25 @@ class FirebaseSyncService {
   }
 
   /// Writes a responder's live GPS position to Firebase.
-  Future<void> updateUnitLocation(RescueUnit unit) async {
+  ///
+  /// [useClientTimestamp] avoids a brief null ServerValue window that would
+  /// drop the unit from the 20s online filter.
+  /// [gpsSpoofActive] marks a debug spoof lock so other clients skip overwrite.
+  /// [force] writes even when a spoof lock is present (complete/abort).
+  Future<void> updateUnitLocation(
+    RescueUnit unit, {
+    bool useClientTimestamp = false,
+    bool gpsSpoofActive = false,
+    bool force = false,
+  }) async {
+    if (!force && !gpsSpoofActive) {
+      final spoofFlag =
+          await _db.ref('unit_locations/${unit.id}/debugGpsSpoof').get();
+      if (spoofFlag.value == true) {
+        // Debug joystick owns this unit's GPS until spoof is cleared.
+        return;
+      }
+    }
     await _db.ref('unit_locations/${unit.id}').set({
       'lat': unit.position.latitude,
       'lng': unit.position.longitude,
@@ -479,31 +501,70 @@ class FirebaseSyncService {
       'assignedSOSId': unit.assignedSOSId,
       'stationId': unit.stationId,
       'barangayId': normalizeBarangayId(unit.barangayId),
-      'timestamp': ServerValue.timestamp,
+      'timestamp': useClientTimestamp
+          ? DateTime.now().millisecondsSinceEpoch
+          : ServerValue.timestamp,
+      if (gpsSpoofActive) 'debugGpsSpoof': true,
     });
   }
 
+  /// Clears the debug GPS spoof lock so normal GPS uploads resume.
+  Future<void> clearUnitGpsSpoofLock(String unitId) async {
+    await _db.ref('unit_locations/$unitId/debugGpsSpoof').remove();
+  }
+
+  /// One-shot read of an active SOS (for cancel/abort when list is stale).
+  Future<SOSRequest?> getActiveSOSById(String sosId) async {
+    final snap = await _db.ref('active_sos/$sosId').get();
+    final raw = snap.value;
+    if (raw is! Map) return null;
+    final v = Map<String, dynamic>.from(raw);
+    v['id'] = sosId;
+    try {
+      final req = SOSRequest.fromJson(v);
+      if (!req.isActive) return null;
+      return req;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Streams all unit location changes in real-time.
-  Stream<List<RescueUnit>> watchAllUnitLocations() {
+  ///
+  /// [spoofLockedUnitIds] are units currently owned by the debug GPS joystick
+  /// (`debugGpsSpoof: true`). Production GPS never sets this flag.
+  Stream<({List<RescueUnit> units, Set<String> spoofLockedUnitIds})>
+      watchAllUnitLocations() {
     return _db.ref('unit_locations').onValue.map((event) {
       final data = event.snapshot.value as Map?;
-      if (data == null) return <RescueUnit>[];
+      if (data == null) {
+        return (
+          units: <RescueUnit>[],
+          spoofLockedUnitIds: <String>{},
+        );
+      }
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       const staleMs = 20 * 1000; // Hide units with no heartbeat for 20s.
       final units = <RescueUnit>[];
+      final spoofLockedUnitIds = <String>{};
 
       for (final e in data.entries) {
         final raw = e.value;
         if (raw is! Map) continue;
         final v = Map<String, dynamic>.from(raw);
+        final unitId = e.key as String;
 
         // Only consider units online if their timestamp heartbeat is recent.
         final ts = (v['timestamp'] as num?)?.toInt();
         if (ts == null || (nowMs - ts) > staleMs) continue;
 
+        if (v['debugGpsSpoof'] == true) {
+          spoofLockedUnitIds.add(unitId);
+        }
+
         units.add(
           RescueUnit(
-            id: e.key as String,
+            id: unitId,
             callSign: v['callSign'] as String? ?? '',
             type: UnitType.values.firstWhere(
               (t) => t.name == v['type'],
@@ -523,7 +584,7 @@ class FirebaseSyncService {
           ),
         );
       }
-      return units;
+      return (units: units, spoofLockedUnitIds: spoofLockedUnitIds);
     });
   }
 
@@ -536,6 +597,14 @@ class FirebaseSyncService {
         (data['lat'] as num).toDouble(),
         (data['lng'] as num).toDouble(),
       );
+    });
+  }
+
+  /// Clears assigned SOS and sets unit idle without requiring a full location write.
+  Future<void> clearUnitAssignment(String unitId) async {
+    await _db.ref('unit_locations/$unitId').update({
+      'status': UnitStatus.idle.name,
+      'assignedSOSId': null,
     });
   }
 
@@ -665,6 +734,9 @@ class FirebaseSyncService {
       reportedForName: request.reportedForName,
       callbackPhone: request.callbackPhone,
       scenePhotoUrl: request.scenePhotoUrl,
+      barangayId: request.barangayId,
+      assistingBarangayIds: request.assistingBarangayIds,
+      assistingUnitTypes: request.assistingUnitTypes,
     );
     final json = entry.toJson();
     json['completedAt'] = now.millisecondsSinceEpoch;
@@ -700,6 +772,9 @@ class FirebaseSyncService {
       reportedForName: request.reportedForName,
       callbackPhone: request.callbackPhone,
       scenePhotoUrl: request.scenePhotoUrl,
+      barangayId: request.barangayId,
+      assistingBarangayIds: request.assistingBarangayIds,
+      assistingUnitTypes: request.assistingUnitTypes,
     );
     final json = completed.toJson();
     json['completedAt'] = now.millisecondsSinceEpoch;

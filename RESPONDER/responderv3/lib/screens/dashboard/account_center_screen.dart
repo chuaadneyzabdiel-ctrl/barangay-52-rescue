@@ -29,8 +29,13 @@ class AccountCenterScreen extends StatelessWidget {
         citizenRows.where((u) => u['isGuest'] != true).toList();
     final guestCitizenRows = citizenRows.where((u) => u['isGuest'] == true).toList();
     final responderRows = users.where((u) => u['role'] == 'responder').toList();
+    final rosterIds = provider.unitsForDisplay.map((u) => u.id).toSet();
     final unitLoginRows = provider.unitAccounts
-        .where((u) => u['softDeletedAt'] == null)
+        .where((u) {
+          if (u['softDeletedAt'] != null) return false;
+          final unitId = u['responderUnitId']?.toString() ?? '';
+          return unitId.isNotEmpty && rosterIds.contains(unitId);
+        })
         .toList()
       ..sort(
         (a, b) => ((b['createdAt'] as num?)?.toInt() ?? 0)

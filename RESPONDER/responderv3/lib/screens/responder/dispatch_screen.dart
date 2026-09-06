@@ -505,24 +505,16 @@ class _DispatchScreenState extends State<DispatchScreen> {
     if (_isCompleting) return;
     final unit = provider.rescueUnits.where((u) => u.id == widget.unitId).firstOrNull ??
         provider.currentResponderUnit;
-    if (unit?.type == UnitType.ambulance) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'For ambulance calls, complete only after arriving at selected facility in the navigation map.',
-          ),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
+    final isAmbulance = unit?.type == UnitType.ambulance;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Complete rescue?'),
-        content: const Text(
-          'Mark this SOS as completed only if the scene is clear and the citizen is assisted.',
+        content: Text(
+          isAmbulance
+              ? 'Mark this SOS complete only if the patient is assisted '
+                  '(at scene or after hospital drop-off). This removes it for everyone.'
+              : 'Mark this SOS as completed only if the scene is clear and the citizen is assisted.',
         ),
         actions: [
           TextButton(
@@ -1035,92 +1027,6 @@ class _DispatchScreenState extends State<DispatchScreen> {
                 ),
               ),
 
-              // Active SOS: complete / cancel / open navigation (when not on map screen)
-              if (activeForUnit != null)
-                Positioned(
-                  left: 12,
-                  right: 12,
-                  bottom: pending.isNotEmpty ? 260 : 110,
-                  child: Material(
-                    color: const Color(0xFF1B2838),
-                    elevation: 8,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.emergency_share,
-                                  color: Colors.orange, size: 22),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Active response • ${activeForUnit.citizenName}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            SOSTypeInfo.forType(activeForUnit.sosType).label,
-                            style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  onPressed: () => _openNavigationForActive(
-                                      context, provider, activeForUnit),
-                                  icon: const Icon(Icons.navigation, size: 18),
-                                  label: const Text('Navigation'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: FilledButton.icon(
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: Colors.green.shade700,
-                                  ),
-                                  onPressed: (_isCompleting || _isCancelling)
-                                      ? null
-                                      : () => _confirmCompleteFromDispatch(
-                                          context, provider, activeForUnit),
-                                  icon: const Icon(Icons.check_circle, size: 18),
-                                  label: const Text('Complete'),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          SizedBox(
-                            width: double.infinity,
-                            child: TextButton.icon(
-                              onPressed: (_isCompleting || _isCancelling)
-                                  ? null
-                                  : () => _confirmAbortFromDispatch(
-                                      context, provider, activeForUnit),
-                              icon: Icon(Icons.cancel, color: Colors.red.shade300),
-                              label: Text(
-                                'Cancel response',
-                                style: TextStyle(color: Colors.red.shade200),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
               // Map layers + recenter
               Positioned(
                 bottom: activeForUnit != null && pending.isNotEmpty
@@ -1259,6 +1165,92 @@ class _DispatchScreenState extends State<DispatchScreen> {
                       ),
                     );
                   },
+                ),
+
+              // Active SOS panel ABOVE the pending sheet so Cancel/Complete stay tappable.
+              if (activeForUnit != null)
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: pending.isNotEmpty ? 260 : 110,
+                  child: Material(
+                    color: const Color(0xFF1B2838),
+                    elevation: 12,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.emergency_share,
+                                  color: Colors.orange, size: 22),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Active response • ${activeForUnit.citizenName}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            SOSTypeInfo.forType(activeForUnit.sosType).label,
+                            style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _openNavigationForActive(
+                                      context, provider, activeForUnit),
+                                  icon: const Icon(Icons.navigation, size: 18),
+                                  label: const Text('Navigation'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Colors.green.shade700,
+                                  ),
+                                  onPressed: (_isCompleting || _isCancelling)
+                                      ? null
+                                      : () => _confirmCompleteFromDispatch(
+                                          context, provider, activeForUnit),
+                                  icon: const Icon(Icons.check_circle, size: 18),
+                                  label: const Text('Complete'),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: TextButton.icon(
+                              onPressed: (_isCompleting || _isCancelling)
+                                  ? null
+                                  : () => _confirmAbortFromDispatch(
+                                      context, provider, activeForUnit),
+                              icon: Icon(Icons.cancel, color: Colors.red.shade300),
+                              label: Text(
+                                'Cancel response',
+                                style: TextStyle(color: Colors.red.shade200),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
 
               // Standby message when no SOS and no active assignment

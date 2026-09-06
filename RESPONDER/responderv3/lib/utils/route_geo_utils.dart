@@ -67,6 +67,35 @@ class RouteGeoUtils {
     return max(0.0, total - along);
   }
 
+  /// Polyline from the driver's projection on [route] to the destination.
+  /// Drops already-passed geometry so arrows/line aren't left behind.
+  static List<LatLng> remainingPolyline(LatLng driver, List<LatLng> route) {
+    if (route.length < 2) return List<LatLng>.from(route);
+    var bestI = 0;
+    var bestDist = double.infinity;
+    LatLng bestProj = route.first;
+    for (var i = 0; i < route.length - 1; i++) {
+      final a = route[i];
+      final b = route[i + 1];
+      final c = closestPointOnSegment(driver, a, b);
+      final d = GeoUtils.haversineKm(driver, c);
+      if (d < bestDist) {
+        bestDist = d;
+        bestI = i;
+        bestProj = c;
+      }
+    }
+    // If far off the road, keep full route until a reroute replaces it.
+    if (bestDist > 0.15) return List<LatLng>.from(route);
+    final rest = route.sublist(bestI + 1);
+    if (rest.isEmpty) return [bestProj, route.last];
+    // Avoid duplicate first vertex when projection ≈ segment end.
+    if (GeoUtils.haversineKm(bestProj, rest.first) < 0.005) {
+      return rest;
+    }
+    return [bestProj, ...rest];
+  }
+
   static double _levelMultiplier(TrafficLevel level) {
     switch (level) {
       case TrafficLevel.clear:
