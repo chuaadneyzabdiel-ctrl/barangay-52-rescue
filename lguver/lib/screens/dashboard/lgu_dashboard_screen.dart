@@ -302,6 +302,8 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
   }
 
   static const _compactBreakpoint = 800.0;
+  static const _navy = Color(0xFF1B3A5C);
+  static const _sheetNavy = Color(0xFF152536);
 
   @override
   Widget build(BuildContext context) {
@@ -311,7 +313,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     return Scaffold(
       backgroundColor: const Color(0xFF0D1B2A),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0D1B2A),
+        backgroundColor: _navy,
         foregroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
@@ -422,11 +424,11 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     final typeLabel = SOSTypeInfo.forType(sos.sosType).label;
     final time = DateFormat('h:mm a').format(sos.createdAt.toLocal());
     return Material(
-      color: escalated ? const Color(0xFFB71C1C) : const Color(0xFFC62828),
+      color: escalated ? const Color(0xFFB71C1C) : const Color(0xFFE53935),
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
           child: Row(
             children: [
               Icon(
@@ -1025,7 +1027,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     return Container(
       width: 280,
       decoration: BoxDecoration(
-        color: const Color(0xFF1B2838),
+        color: _sheetNavy,
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.2),
@@ -1040,7 +1042,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
             width: double.infinity,
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
             decoration: BoxDecoration(
-              color: const Color(0xFF1B3A5C),
+              color: _navy,
               borderRadius: const BorderRadius.only(
                 bottomRight: Radius.circular(12),
               ),
@@ -1350,7 +1352,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
   Widget _buildRightPanel() {
     return Container(
       width: 320,
-      color: const Color(0xFF1B2838),
+      color: _sheetNavy,
       child: Consumer<RescueProvider>(
         builder: (context, provider, _) {
           return Column(
@@ -1509,7 +1511,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF1B3A5C),
+        color: _navy,
         border: Border(
           bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
         ),
@@ -1910,17 +1912,41 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
       animation: _pulse,
       builder: (context, child) {
         final t = unacked ? _pulse.value : 0.0;
-        final glow = escalated ? 0.45 + 0.35 * t : 0.15 + 0.22 * t;
-        return Card(
-          color: Colors.red.withValues(alpha: unacked ? glow : 0.15),
-          margin: const EdgeInsets.only(bottom: 6),
-          shape: escalated
-              ? RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  side: const BorderSide(color: Colors.yellowAccent, width: 1.5),
-                )
-              : null,
-          child: child,
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1B2838),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: escalated
+                  ? Colors.yellowAccent
+                  : (unacked
+                      ? Colors.redAccent.withValues(alpha: 0.4 + 0.4 * t)
+                      : Colors.white10),
+              width: escalated ? 1.5 : 1,
+            ),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    width: 5,
+                    color: unacked
+                        ? Color.lerp(
+                            const Color(0xFFE53935),
+                            Colors.red.shade200,
+                            t,
+                          )
+                        : const Color(0xFFE53935),
+                  ),
+                  Expanded(child: child!),
+                ],
+              ),
+            ),
+          ),
         );
       },
       child: ListTile(
@@ -1930,8 +1956,14 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
           color: unacked ? Colors.redAccent : Colors.red,
           size: 20,
         ),
-        title: Text(sos.citizenName,
-            style: const TextStyle(color: Colors.white, fontSize: 13)),
+        title: Text(
+          '${typeLabel.toUpperCase()} · ${sos.citizenName}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         subtitle: Text(
           '${_addressFor(sos)}\n$typeLabel · ${sos.priority.name.toUpperCase()} · ${sos.status.name}'
           '${sos.locationIsPinned ? (sos.isProxyReport ? ' · For ${sos.reportedForName}' : ' · Pinned') : ''}'
@@ -2178,28 +2210,49 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
     final coords = ReverseGeocodingService.coordinatesLabel(sos.location);
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF1B2838),
+      backgroundColor: _sheetNavy,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
         return SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Center(
+                  child: Container(
+                    width: 42,
+                    height: 5,
+                    margin: const EdgeInsets.only(bottom: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                ),
+                Text(
+                  SOSTypeInfo.forType(sos.sosType).label.toUpperCase(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 4),
                 Text(
                   sos.citizenName,
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 4),
                   Text(
-                  '${SOSTypeInfo.forType(sos.sosType).label} · ${sos.priority.name.toUpperCase()} · ${sos.status.name}',
+                  '${sos.priority.name.toUpperCase()} · ${sos.status.name}',
                   style: TextStyle(color: Colors.grey[400], fontSize: 13),
                 ),
                 const SizedBox(height: 6),
@@ -2239,17 +2292,40 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                   ),
                 ],
                 if (sos.hasCallbackPhone) ...[
-                  const SizedBox(height: 6),
-                  InkWell(
-                    onTap: () => _launchCitizenCall(sos.callbackPhone!.trim()),
-                    child: Text(
-                      'Call: ${sos.callbackPhone!.trim()}',
-                      style: const TextStyle(
-                        color: Colors.lightGreenAccent,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        decoration: TextDecoration.underline,
-                        decorationColor: Colors.lightGreenAccent,
+                  const SizedBox(height: 10),
+                  Material(
+                    color: const Color(0xFF2E7D32),
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      onTap: () => _launchCitizenCall(sos.callbackPhone!.trim()),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.call, color: Colors.white, size: 18),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                sos.callbackPhone!.trim(),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const Text(
+                              'Tap to call',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -2340,7 +2416,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       icon: const Icon(Icons.visibility, size: 18),
                       label: const Text('Acknowledge'),
                     ),
-                    FilledButton.tonalIcon(
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF1565C0),
+                      ),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _pickAndRun(
@@ -2355,7 +2434,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       icon: const Icon(Icons.send, size: 18),
                       label: const Text('Dispatch unit'),
                     ),
-                    FilledButton.tonalIcon(
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF00838F),
+                      ),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _pickAndRun(
@@ -2372,7 +2454,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       icon: const Icon(Icons.group_add, size: 18),
                       label: const Text('Add backup'),
                     ),
-                    FilledButton.tonalIcon(
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF6A1B9A),
+                      ),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _pickAndRun(
@@ -2387,7 +2472,10 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       icon: const Icon(Icons.swap_horiz, size: 18),
                       label: const Text('Reassign'),
                     ),
-                    OutlinedButton.icon(
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF455A64),
+                      ),
                       onPressed: () async {
                         Navigator.pop(ctx);
                         try {
@@ -2407,9 +2495,9 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                       icon: const Icon(Icons.link_off, size: 18),
                       label: const Text('Release unit'),
                     ),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.orangeAccent,
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFE65100),
                       ),
                       onPressed: () {
                         Navigator.pop(ctx);
@@ -2420,7 +2508,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen>
                     ),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(
-                        backgroundColor: Colors.green.shade700,
+                        backgroundColor: const Color(0xFF2E7D32),
                       ),
                       onPressed: () {
                         Navigator.pop(ctx);

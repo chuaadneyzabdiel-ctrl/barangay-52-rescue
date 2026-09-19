@@ -1014,7 +1014,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
                           ],
                         ),
                         child: Text(
-                          _statusLabel(unit.first.status),
+                          '${_statusLabel(unit.first.status)} · ${unit.first.callSign}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 11,
@@ -1088,13 +1088,13 @@ class _DispatchScreenState extends State<DispatchScreen> {
                   builder: (context, scrollController) {
                     return Container(
                       decoration: const BoxDecoration(
-                        color: Color(0xFF0D1B2A),
+                        color: Color(0xFF152536),
                         borderRadius:
-                            BorderRadius.vertical(top: Radius.circular(20)),
+                            BorderRadius.vertical(top: Radius.circular(28)),
                         boxShadow: [
                           BoxShadow(
                             color: Colors.black45,
-                            blurRadius: 12,
+                            blurRadius: 16,
                             offset: Offset(0, -4),
                           ),
                         ],
@@ -1122,12 +1122,12 @@ class _DispatchScreenState extends State<DispatchScreen> {
                                 const Icon(Icons.warning_amber,
                                     color: Colors.orange, size: 20),
                                 const SizedBox(width: 8),
-                                Text(
-                                  'Incoming SOS Alerts',
+                                const Text(
+                                  'Incoming SOS',
                                   style: TextStyle(
-                                    color: Colors.grey[300],
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w800,
                                   ),
                                 ),
                               ],
@@ -1174,38 +1174,49 @@ class _DispatchScreenState extends State<DispatchScreen> {
                   right: 12,
                   bottom: pending.isNotEmpty ? 260 : 110,
                   child: Material(
-                    color: const Color(0xFF1B2838),
+                    color: const Color(0xFF152536),
                     elevation: 12,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(20),
                     child: Padding(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.emergency_share,
-                                  color: Colors.orange, size: 22),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Active response • ${activeForUnit.citizenName}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
+                          Center(
+                            child: Container(
+                              width: 42,
+                              height: 5,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.white24,
+                                borderRadius: BorderRadius.circular(99),
                               ),
-                            ],
+                            ),
                           ),
-                          const SizedBox(height: 8),
+                          const Text(
+                            'En route',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 18,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Active response • ${activeForUnit.citizenName}',
+                            style: const TextStyle(
+                              color: Color(0xFF81C784),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
                           Text(
                             SOSTypeInfo.forType(activeForUnit.sosType).label,
                             style: TextStyle(color: Colors.grey[400], fontSize: 12),
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 12),
                           Row(
                             children: [
                               Expanded(
@@ -1220,7 +1231,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
                               Expanded(
                                 child: FilledButton.icon(
                                   style: FilledButton.styleFrom(
-                                    backgroundColor: Colors.green.shade700,
+                                    backgroundColor: const Color(0xFF2E7D32),
                                   ),
                                   onPressed: (_isCompleting || _isCancelling)
                                       ? null
@@ -1235,15 +1246,23 @@ class _DispatchScreenState extends State<DispatchScreen> {
                           const SizedBox(height: 8),
                           SizedBox(
                             width: double.infinity,
-                            child: TextButton.icon(
+                            height: 44,
+                            child: FilledButton.icon(
                               onPressed: (_isCompleting || _isCancelling)
                                   ? null
                                   : () => _confirmAbortFromDispatch(
                                       context, provider, activeForUnit),
-                              icon: Icon(Icons.cancel, color: Colors.red.shade300),
-                              label: Text(
+                              icon: const Icon(Icons.cancel_outlined),
+                              label: const Text(
                                 'Cancel response',
-                                style: TextStyle(color: Colors.red.shade200),
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFFE53935),
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
                               ),
                             ),
                           ),
@@ -1411,262 +1430,249 @@ class _DispatchCard extends StatelessWidget {
           : '${km.toStringAsFixed(1)}km away';
     }
 
-    return Card(
+    return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      color: const Color(0xFF1B2838),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: priorityColor,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    priorityLabel,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                if (distanceText.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.withValues(alpha: 0.3),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      distanceText,
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ),
-                ],
-                const Spacer(),
-                Text(
-                  _timeAgo(request.createdAt),
-                  style: TextStyle(color: Colors.grey[500], fontSize: 12),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: request.isOwnedByBarangay(unitBarangayId)
-                    ? Colors.green.withValues(alpha: 0.22)
-                    : const Color(0xFF1565C0).withValues(alpha: 0.35),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                request.isOwnedByBarangay(unitBarangayId)
-                    ? 'Home barangay ${request.barangayId}'
-                    : 'Assisting barangay $unitBarangayId · home ${request.barangayId}',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B2838),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: 6, color: const Color(0xFFE53935)),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        _iconForSOSType(request.sosType),
-                        color: Colors.amber,
-                        size: 18,
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: priorityColor,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              priorityLabel,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                          if (distanceText.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Text(
+                              distanceText,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                          const Spacer(),
+                          Text(
+                            _timeAgo(request.createdAt),
+                            style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                          ),
+                          IconButton(
+                            onPressed: onLocateTap,
+                            icon: const Icon(Icons.gps_fixed,
+                                color: Colors.lightBlueAccent, size: 20),
+                            tooltip: 'Show on map',
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Icon(
+                            _iconForSOSType(request.sosType),
+                            color: Colors.white,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              SOSTypeInfo.forType(request.sosType).label.toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.6,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
                       Text(
-                        SOSTypeInfo.forType(request.sosType).label.toUpperCase(),
+                        request.typeDescription,
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        request.citizenName,
                         style: const TextStyle(
-                          color: Colors.amber,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.5,
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: request.isOwnedByBarangay(unitBarangayId)
+                              ? Colors.green.withValues(alpha: 0.22)
+                              : const Color(0xFF1565C0).withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          request.isOwnedByBarangay(unitBarangayId)
+                              ? 'Home barangay ${request.barangayId}'
+                              : 'Assisting barangay $unitBarangayId · home ${request.barangayId}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      if (request.locationIsPinned) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          request.isProxyReport
+                              ? 'Pinned location for ${request.reportedForName}'
+                              : 'Pinned incident location (not live GPS)',
+                          style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      if (!BarangayCoverage.contains(
+                        request.location,
+                        barangayId: request.barangayId,
+                      )) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          BarangayCoverage.outsideCoverageLabel(request.barangayId),
+                          style: const TextStyle(
+                            color: Colors.orangeAccent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      Material(
+                        color: const Color(0xFF1B5E20),
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          onTap: !request.hasCallbackPhone
+                              ? null
+                              : () async {
+                                  final uri = Uri(
+                                    scheme: 'tel',
+                                    path: request.callbackPhone!.trim(),
+                                  );
+                                  await launchUrl(
+                                    uri,
+                                    mode: LaunchMode.externalApplication,
+                                  );
+                                },
+                          borderRadius: BorderRadius.circular(12),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.call, color: Colors.white, size: 18),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    request.hasCallbackPhone
+                                        ? request.callbackPhone!.trim()
+                                        : 'No callback number',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  request.hasCallbackPhone
+                                      ? 'Tap to call'
+                                      : '',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (request.hasScenePhoto) ...[
+                        const SizedBox(height: 8),
+                        SosScenePhotoThumb(photoUrl: request.scenePhotoUrl),
+                      ],
+                      if (request.message != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          request.message!,
+                          style: TextStyle(color: Colors.grey[400], fontSize: 14),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      if (ineligibleReason != null) ...[
+                        Text(
+                          ineligibleReason!,
+                          style: const TextStyle(
+                              color: Colors.orangeAccent, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: FilledButton(
+                          onPressed: (isAccepting || !canAccept) ? null : onAccept,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF2ECC71),
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor: Colors.grey,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text(
+                            'ACCEPT & NAVIGATE',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w900, fontSize: 15),
+                          ),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    request.typeDescription,
-                    style: TextStyle(
-                      color: Colors.grey[400],
-                      fontSize: 13,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                const Icon(Icons.person, color: Colors.white70, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    request.citizenName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: onLocateTap,
-                  icon:
-                      const Icon(Icons.gps_fixed, color: Colors.blue, size: 20),
-                  tooltip: 'Show on map',
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-            if (request.locationIsPinned) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.push_pin, color: Colors.orangeAccent, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      request.isProxyReport
-                          ? 'Pinned location for ${request.reportedForName}'
-                          : 'Pinned incident location (not live GPS)',
-                      style: const TextStyle(
-                        color: Colors.orangeAccent,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (!BarangayCoverage.contains(
-              request.location,
-              barangayId: request.barangayId,
-            )) ...[
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.warning_amber, color: Colors.orangeAccent, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      BarangayCoverage.outsideCoverageLabel(request.barangayId),
-                      style: TextStyle(
-                        color: Colors.orangeAccent,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            if (request.hasCallbackPhone) ...[
-              const SizedBox(height: 8),
-              InkWell(
-                onTap: () async {
-                  final uri = Uri(
-                    scheme: 'tel',
-                    path: request.callbackPhone!.trim(),
-                  );
-                  await launchUrl(uri, mode: LaunchMode.externalApplication);
-                },
-                child: Row(
-                  children: [
-                    const Icon(Icons.call, color: Colors.lightGreenAccent, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        request.callbackPhone!.trim(),
-                        style: const TextStyle(
-                          color: Colors.lightGreenAccent,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          decoration: TextDecoration.underline,
-                          decorationColor: Colors.lightGreenAccent,
-                        ),
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ],
-            if (request.hasScenePhoto)
-              SosScenePhotoThumb(photoUrl: request.scenePhotoUrl),
-            if (request.message != null) ...[
-              const SizedBox(height: 6),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(Icons.message, color: Colors.white70, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      request.message!,
-                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: 14),
-            if (ineligibleReason != null) ...[
-              Text(
-                ineligibleReason!,
-                style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-            ],
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton.icon(
-                onPressed: isAccepting ? null : onAccept,
-                icon: const Icon(Icons.navigation),
-                label: const Text(
-                  'ACCEPT & NAVIGATE',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF2ECC71),
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.grey,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

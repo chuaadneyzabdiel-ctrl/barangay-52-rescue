@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../map/barangay_coverage.dart';
 import '../../map/rescue_map_tiles.dart';
 import '../../models/map_layer_models.dart';
@@ -1617,14 +1618,78 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
-  // ── SOS Button View ──
+  // ── SOS home ──
+
+  static const Color _navy = Color(0xFF1B3A5C);
+
+  BoxDecoration get _sosCardDecoration => BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE6EDF4)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      );
+
+  Widget _sosHomeCard({required Widget child, EdgeInsetsGeometry? padding}) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: padding ?? const EdgeInsets.all(16),
+      decoration: _sosCardDecoration,
+      child: child,
+    );
+  }
+
+  Widget _sosSectionHeader(IconData icon, String title, {String? subtitle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF4FA),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Icon(icon, color: _navy, size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                  color: _navy,
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            style: TextStyle(color: Colors.grey[600], fontSize: 12, height: 1.35),
+          ),
+        ],
+      ],
+    );
+  }
 
   Widget _buildSOSView() {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: const Color(0xFFF4F7FB),
       appBar: AppBar(
         title: const Text('Caloocan City Integrated Rescue Operations'),
-        backgroundColor: const Color(0xFF1B3A5C),
+        backgroundColor: _navy,
         foregroundColor: Colors.white,
         centerTitle: true,
         elevation: 0,
@@ -1645,27 +1710,18 @@ class _SOSScreenState extends State<SOSScreen>
       body: Consumer<RescueProvider>(
         builder: (context, provider, _) {
           return SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                minHeight: MediaQuery.of(context).size.height -
-                    (MediaQuery.of(context).padding.top + kToolbarHeight),
-              ),
-              child: Column(
-                children: [
-                  _buildLocationBanner(provider),
-                  _buildLocationModeSection(provider),
-                  _buildLocationCard(provider),
-                  _buildUserMapSection(provider),
-                  _buildSOSTypeSection(),
-                  _buildAvailableRescuers(provider),
-                  _buildCallbackPhoneField(),
-                  _buildScenePhotoField(),
-                  const SizedBox(height: 24),
-                  _buildSOSButton(),
-                  const SizedBox(height: 24),
-                  _buildBottomInfo(),
-                ],
-              ),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+            child: Column(
+              children: [
+                _buildLocationBanner(provider),
+                _buildLocationModeSection(provider),
+                _buildUserMapSection(provider),
+                _buildSOSTypeSection(),
+                _buildAvailableRescuers(provider),
+                _buildCallbackPhoneField(),
+                _buildScenePhotoField(),
+                _buildSOSButton(),
+              ],
             ),
           );
         },
@@ -1679,7 +1735,7 @@ class _SOSScreenState extends State<SOSScreen>
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: Colors.orange.shade700,
@@ -1736,75 +1792,120 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildLocationModeSection(RescueProvider provider) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    final gps = provider.currentPosition;
+    final incident = _incidentTarget(provider);
+    final usingPin = _usePinnedLocation;
+    final shown = usingPin ? incident : gps;
+    final statusTitle = usingPin
+        ? (incident != null ? 'Pin set' : 'Drop a pin on the map')
+        : (gps != null ? 'GPS ready' : 'Getting GPS…');
+    return _sosHomeCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          _sosSectionHeader(
+            Icons.place_outlined,
             'Incident location',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-              color: Color(0xFF1B3A5C),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Use your GPS, or drop a pin if a relative needs help somewhere else.',
-            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+            subtitle:
+                'Use your GPS, or drop a pin if a relative needs help somewhere else.',
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
             children: [
-              ChoiceChip(
-                label: const Text('My GPS'),
-                selected: !_usePinnedLocation,
-                onSelected: (_) {
-                  setState(() {
-                    _usePinnedLocation = false;
-                    _forSomeoneElse = false;
-                  });
-                },
-              ),
-              ChoiceChip(
-                label: const Text('Another location'),
-                selected: _usePinnedLocation,
-                onSelected: (_) {
-                  setState(() {
-                    _usePinnedLocation = true;
-                    _userMapVisible = true;
-                    _userMapExpanded = true;
-                    _pinnedLocation ??= provider.currentPosition;
-                  });
-                  final seed = _pinnedLocation ?? provider.currentPosition;
-                  if (seed != null) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      try {
-                        _userMapController.move(seed, 16);
-                      } catch (_) {}
+              Expanded(
+                child: _locationModeChip(
+                  label: 'My GPS',
+                  icon: Icons.my_location,
+                  selected: !usingPin,
+                  onTap: () {
+                    setState(() {
+                      _usePinnedLocation = false;
+                      _forSomeoneElse = false;
                     });
-                  }
-                },
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _locationModeChip(
+                  label: 'Another location',
+                  icon: Icons.push_pin_outlined,
+                  selected: usingPin,
+                  onTap: () {
+                    setState(() {
+                      _usePinnedLocation = true;
+                      _userMapVisible = true;
+                      _userMapExpanded = true;
+                      _pinnedLocation ??= provider.currentPosition;
+                    });
+                    final seed = _pinnedLocation ?? provider.currentPosition;
+                    if (seed != null) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        try {
+                          _userMapController.move(seed, 16);
+                        } catch (_) {}
+                      });
+                    }
+                  },
+                ),
               ),
             ],
           ),
-          if (_usePinnedLocation) ...[
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F7FB),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  shown != null
+                      ? (usingPin ? Icons.push_pin : Icons.location_on)
+                      : Icons.location_searching,
+                  color: shown != null ? Colors.green.shade700 : Colors.orange.shade700,
+                  size: 22,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        statusTitle,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: _navy,
+                        ),
+                      ),
+                      if (shown != null)
+                        Text(
+                          '${shown.latitude.toStringAsFixed(5)}, ${shown.longitude.toStringAsFixed(5)}',
+                          style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                        ),
+                      if (shown != null &&
+                          !BarangayCoverage.contains(
+                            shown,
+                            barangayId: provider.citizenBarangayId,
+                          ))
+                        Text(
+                          'Outside Barangay ${provider.citizenBarangayId}.',
+                          style: TextStyle(
+                            color: Colors.orange.shade800,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (usingPin) ...[
             const SizedBox(height: 8),
             Text(
               _pinnedLocation == null
@@ -1844,74 +1945,36 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
-  Widget _buildLocationCard(RescueProvider provider) {
-    final gps = provider.currentPosition;
-    final incident = _incidentTarget(provider);
-    final usingPin = _usePinnedLocation;
-    final title = usingPin
-        ? (incident != null ? 'Pinned incident location' : 'Drop a pin on the map')
-        : (gps != null ? 'Location Acquired' : 'Acquiring Location...');
-    final shown = usingPin ? incident : gps;
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(
-            shown != null
-                ? (usingPin ? Icons.push_pin : Icons.location_on)
-                : Icons.location_searching,
-            color: shown != null ? Colors.green : Colors.orange,
-            size: 28,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 15),
+  Widget _locationModeChip({
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: selected ? _navy : const Color(0xFFF4F7FB),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: selected ? Colors.white : _navy),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: selected ? Colors.white : _navy,
                 ),
-                if (shown != null)
-                  Text(
-                    '${shown.latitude.toStringAsFixed(5)}, '
-                    '${shown.longitude.toStringAsFixed(5)}',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                  ),
-                if (shown != null &&
-                    !BarangayCoverage.contains(
-                      shown,
-                      barangayId: provider.citizenBarangayId,
-                    ))
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      'This location is outside Barangay ${provider.citizenBarangayId}.',
-                      style: TextStyle(
-                        color: Colors.orange.shade800,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1920,22 +1983,23 @@ class _SOSScreenState extends State<SOSScreen>
     final gps = provider.currentPosition;
     final pin = _pinnedLocation;
     if (!_userMapVisible) {
-      return Container(
-        width: double.infinity,
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        alignment: Alignment.centerLeft,
-        child: TextButton.icon(
-          onPressed: () => setState(() {
-            _userMapVisible = true;
-            _userMapExpanded = true;
-          }),
-          icon: const Icon(Icons.map),
-          label: Text(
-            _usePinnedLocation
-                ? 'Show map to drop a pin'
-                : (gps == null
-                    ? 'Waiting for your GPS location...'
-                    : 'Show your location on map'),
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => setState(() {
+              _userMapVisible = true;
+              _userMapExpanded = true;
+            }),
+            icon: const Icon(Icons.map),
+            label: Text(
+              _usePinnedLocation
+                  ? 'Show map to drop a pin'
+                  : (gps == null
+                      ? 'Waiting for your GPS location...'
+                      : 'Show your location on map'),
+            ),
           ),
         ),
       );
@@ -1943,18 +2007,8 @@ class _SOSScreenState extends State<SOSScreen>
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: _sosCardDecoration,
       child: Column(
         children: [
           InkWell(
@@ -2105,53 +2159,76 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildSOSTypeSection() {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    final selectedInfo = SOSTypeInfo.forType(_selectedSosType);
+    return _sosHomeCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.category, color: const Color(0xFF1B3A5C), size: 22),
-              const SizedBox(width: 8),
-              const Text(
-                'What type of emergency?',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: Color(0xFF1B3A5C),
-                ),
-              ),
-            ],
+          _sosSectionHeader(
+            Icons.emergency_outlined,
+            'What type of emergency?',
+            subtitle: selectedInfo.description,
           ),
-          const SizedBox(height: 12),
-          Text(
-            'Select the type that best describes your situation. Rescuers will see this before they accept.',
-            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              const gap = 8.0;
+              final tileW = (constraints.maxWidth - gap * 2) / 3;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: SOSType.values.map((type) {
+                  final selected = _selectedSosType == type;
+                  final color = _colorForSOSType(type);
+                  return SizedBox(
+                    width: tileW,
+                    child: Material(
+                      color: selected ? color.withValues(alpha: 0.14) : const Color(0xFFF4F7FB),
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        onTap: () => setState(() => _selectedSosType = type),
+                        borderRadius: BorderRadius.circular(14),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 6),
+                          child: Column(
+                            children: [
+                              Icon(
+                                _iconForSOSType(type),
+                                size: 26,
+                                color: selected ? color : Colors.blueGrey.shade600,
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                _shortSosLabel(type),
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 12,
+                                  color: selected ? color : _navy,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              );
+            },
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _detailsController,
             maxLines: 2,
-            style: TextStyle(color: Colors.black87, fontSize: 13),
+            style: const TextStyle(color: Colors.black87, fontSize: 13),
             decoration: InputDecoration(
               hintText: 'Additional details (optional)',
               hintStyle: TextStyle(color: Colors.grey[500], fontSize: 13),
               filled: true,
-              fillColor: Colors.grey.shade100,
+              fillColor: const Color(0xFFF4F7FB),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
@@ -2175,7 +2252,7 @@ class _SOSScreenState extends State<SOSScreen>
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF1B3A5C),
+                      color: _navy,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -2188,7 +2265,7 @@ class _SOSScreenState extends State<SOSScreen>
                       fontSize: 12,
                       color: _preferredMedicalFacility == null
                           ? Colors.grey[700]
-                          : const Color(0xFF1B3A5C),
+                          : _navy,
                       fontWeight: _preferredMedicalFacility == null
                           ? FontWeight.w500
                           : FontWeight.w700,
@@ -2234,72 +2311,6 @@ class _SOSScreenState extends State<SOSScreen>
               ),
             ),
           ],
-          const SizedBox(height: 12),
-          ...SOSType.values.map((type) {
-            final info = SOSTypeInfo.forType(type);
-            final isSelected = _selectedSosType == type;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Material(
-                color: isSelected
-                    ? const Color(0xFF1B3A5C).withValues(alpha: 0.12)
-                    : Colors.grey.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  onTap: () => setState(() => _selectedSosType = type),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 12),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _iconForSOSType(type),
-                          size: 24,
-                          color: isSelected
-                              ? const Color(0xFF1B3A5C)
-                              : Colors.grey[600],
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                info.label,
-                                style: TextStyle(
-                                  fontWeight:
-                                      isSelected ? FontWeight.bold : FontWeight.w600,
-                                  fontSize: 14,
-                                  color: isSelected
-                                      ? const Color(0xFF1B3A5C)
-                                      : Colors.black87,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                info.description,
-                                style: TextStyle(
-                                  color: Colors.grey[600],
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (isSelected)
-                          const Icon(
-                            Icons.check_circle,
-                            color: Color(0xFF1B3A5C),
-                            size: 22,
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            );
-          }),
         ],
       ),
     );
@@ -2312,7 +2323,7 @@ class _SOSScreenState extends State<SOSScreen>
 
     if (units.isEmpty) {
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.only(bottom: 12),
         child: Text(
           'No rescue units are currently available.\nYour SOS will be queued as soon as a unit comes online.',
           textAlign: TextAlign.center,
@@ -2321,38 +2332,11 @@ class _SOSScreenState extends State<SOSScreen>
       );
     }
 
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    return _sosHomeCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.local_shipping, color: const Color(0xFF1B3A5C), size: 22),
-              const SizedBox(width: 8),
-              const Text(
-                'Available rescue units nearby',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: Color(0xFF1B3A5C),
-                ),
-              ),
-            ],
-          ),
+          _sosSectionHeader(Icons.local_shipping_outlined, 'Available rescue units nearby'),
           const SizedBox(height: 8),
           ...units.map((u) => ListTile(
                 dense: true,
@@ -2391,6 +2375,28 @@ class _SOSScreenState extends State<SOSScreen>
     };
   }
 
+  String _shortSosLabel(SOSType type) {
+    return switch (type) {
+      SOSType.medical => 'Medical',
+      SOSType.fire => 'Fire',
+      SOSType.accident => 'Accident',
+      SOSType.flood => 'Flood',
+      SOSType.violence => 'Violence',
+      SOSType.other => 'Other',
+    };
+  }
+
+  Color _colorForSOSType(SOSType type) {
+    return switch (type) {
+      SOSType.medical => const Color(0xFFC62828),
+      SOSType.fire => const Color(0xFFE65100),
+      SOSType.accident => const Color(0xFFF9A825),
+      SOSType.flood => const Color(0xFF1565C0),
+      SOSType.violence => const Color(0xFF6A1B9A),
+      SOSType.other => const Color(0xFF455A64),
+    };
+  }
+
   String _unitTypeLabelForCitizen(String raw) {
     return switch (raw) {
       'ambulance' => 'AMBULANCE',
@@ -2402,42 +2408,15 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildCallbackPhoneField() {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    return _sosHomeCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
-            children: [
-              Icon(Icons.phone, color: Color(0xFF1B3A5C), size: 22),
-              SizedBox(width: 8),
-              Text(
-                'Your phone number',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: Color(0xFF1B3A5C),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Optional. SOS still sends if this is empty. Add a number if you want responders to call you.',
-            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          _sosSectionHeader(
+            Icons.phone_outlined,
+            'Your phone number',
+            subtitle:
+                'Optional. SOS still sends if this is empty. Add a number if you want responders to call you.',
           ),
           const SizedBox(height: 12),
           TextField(
@@ -2447,7 +2426,7 @@ class _SOSScreenState extends State<SOSScreen>
               hintText: '09XXXXXXXXX',
               prefixIcon: const Icon(Icons.call),
               filled: true,
-              fillColor: Colors.grey.shade100,
+              fillColor: const Color(0xFFF4F7FB),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
@@ -2499,46 +2478,19 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildScenePhotoField() {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
+    return _sosHomeCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
-            children: [
-              Icon(Icons.photo_camera, color: Color(0xFF1B3A5C), size: 22),
-              SizedBox(width: 8),
-              Text(
-                'Scene photo',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  color: Color(0xFF1B3A5C),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Optional. Helps LGU and responders check the emergency. SOS still sends without a photo.',
-            style: TextStyle(color: Colors.grey[600], fontSize: 12),
+          _sosSectionHeader(
+            Icons.photo_camera_outlined,
+            'Scene photo',
+            subtitle:
+                'Optional. Helps LGU and responders check the emergency. SOS still sends without a photo.',
           ),
           const SizedBox(height: 12),
           if (_scenePhotoUrl != null) SosScenePhotoThumb(photoUrl: _scenePhotoUrl),
-          const SizedBox(height: 8),
+          if (_scenePhotoUrl != null) const SizedBox(height: 8),
           Row(
             children: [
               FilledButton.icon(
@@ -2568,68 +2520,256 @@ class _SOSScreenState extends State<SOSScreen>
   }
 
   Widget _buildSOSButton() {
-    return Center(
-      child: AnimatedBuilder(
-        animation: _pulseAnimation,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _pulseAnimation.value,
-            child: child,
-          );
-        },
-        child: GestureDetector(
-          onTap: _sendSOS,
-          child: Container(
-            width: 200,
-            height: 200,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                colors: [Colors.red.shade400, Colors.red.shade800],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.red.withValues(alpha: 0.4),
-                  blurRadius: 30,
-                  spreadRadius: 5,
-                ),
-              ],
-            ),
-            child: Center(
-              child: _sending
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.sos, color: Colors.white, size: 48),
-                        SizedBox(height: 8),
-                        Text(
-                          'SOS',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 4,
-                          ),
+    final hint = _usePinnedLocation
+        ? 'Pinned location will be sent to dispatch. Phone and photo are optional.'
+        : 'Your GPS location will be sent to dispatch. Phone and photo are optional.';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        children: [
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: 1.0 + ((_pulseAnimation.value - 1.0) * 0.025),
+                child: child,
+              );
+            },
+            child: Semantics(
+              button: true,
+              label: 'Send SOS emergency alert',
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _sending ? null : _sendSOS,
+                  borderRadius: BorderRadius.circular(18),
+                  child: Ink(
+                    width: double.infinity,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFE53935), Color(0xFFB71C1C)],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.red.withValues(alpha: 0.28),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
                         ),
                       ],
                     ),
+                    child: Center(
+                      child: _sending
+                          ? const SizedBox(
+                              width: 26,
+                              height: 26,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.6,
+                              ),
+                            )
+                          : const Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'SOS',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 3,
+                                    height: 1,
+                                  ),
+                                ),
+                                SizedBox(height: 4),
+                                Text(
+                                  'Tap to send alert',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
+          const SizedBox(height: 10),
+          Text(
+            hint,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey[600], fontSize: 12, height: 1.35),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const Color _mapNavy = Color(0xFF0D1B2A);
+  static const Color _sheetNavy = Color(0xFF152536);
+
+  String _sosRequestNumber() {
+    final id = _lastRequest?.id ?? '';
+    final tail = id.length <= 6 ? id.toUpperCase() : id.substring(id.length - 6).toUpperCase();
+    return 'CALSOS-$tail';
+  }
+
+  String _clockLabel(DateTime time) {
+    final hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
+    final minute = time.minute.toString().padLeft(2, '0');
+    final suffix = time.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $suffix';
+  }
+
+  Future<void> _callPhone(String phone) async {
+    final uri = Uri.parse('tel:${phone.trim()}');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  String? _unitPhoneNumber() {
+    final info = _dispatchInfo;
+    if (info == null) return null;
+    for (final key in ['unitPhone', 'contactPhone', 'phone', 'responderPhone']) {
+      final value = info[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  void _openCitizenChatSheet() {
+    final provider = context.read<RescueProvider>();
+    setState(() => _chatSheetOpen = true);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: _sheetNavy,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (_, scrollController) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                'Message rescuer',
+                style: TextStyle(
+                  color: Colors.grey[300],
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Expanded(
+              child: SOSChatPanel(
+                sosId: _lastRequest!.id,
+                senderRole: 'citizen',
+                senderId: provider.citizenId ?? 'citizen',
+                senderDisplayName: provider.citizenName ?? 'Citizen',
+                completedAt: null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(() {
+      if (mounted) setState(() => _chatSheetOpen = false);
+    });
+  }
+
+  Widget _mapCircleButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return Material(
+      color: const Color(0xFF1E3348),
+      shape: const CircleBorder(),
+      elevation: 4,
+      child: IconButton(
+        icon: Icon(icon, color: Colors.white),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  Widget _sheetHandle() {
+    return Center(
+      child: Container(
+        width: 42,
+        height: 5,
+        margin: const EdgeInsets.only(bottom: 16),
+        decoration: BoxDecoration(
+          color: Colors.white24,
+          borderRadius: BorderRadius.circular(99),
         ),
       ),
     );
   }
 
-  Widget _buildBottomInfo() {
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Text(
-        'Tap the SOS button in an emergency.\n'
-        '${_usePinnedLocation ? 'The pinned location will be sent to Caloocan City Integrated Rescue Operations.' : 'Your GPS location will be sent to Caloocan City Integrated Rescue Operations.'}\n'
-        'Phone number and photo are optional.',
-        textAlign: TextAlign.center,
-        style: TextStyle(color: Colors.grey[500], fontSize: 13),
+  Widget _darkInfoTile({
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.18),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: iconColor, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2638,139 +2778,156 @@ class _SOSScreenState extends State<SOSScreen>
 
   Widget _buildWaitingView() {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1B2A),
+      backgroundColor: _mapNavy,
       body: Consumer<RescueProvider>(
         builder: (context, provider, _) {
-          return Stack(
+          return Column(
             children: [
-              FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: _incidentTarget(provider) ??
-                      provider.currentPosition ??
-                      const LatLng(14.6544, 120.9840),
-                  initialZoom: 15,
-                  interactionOptions: kRescueMapInteractions,
-                  keepAlive: true,
-                ),
-                children: [
-                  const RescueMapTileLayer(),
-                  ...BarangayCoverage.mapLayers(
-                    barangayId: provider.citizenBarangayId,
-                  ),
-                  MarkerLayer(markers: _citizenIncidentMarkers(provider)),
-                ],
-              ),
-              Positioned(
-                top: MediaQuery.of(context).padding.top + 8,
-                right: 16,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
+              Expanded(
+                child: Stack(
                   children: [
-                    IconButton.filled(
-                      icon: const Icon(Icons.layers),
-                      onPressed: () => showMapLayersSheet(context),
-                      tooltip: 'Map type & details',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black54,
+                    FlutterMap(
+                      mapController: _mapController,
+                      options: MapOptions(
+                        initialCenter: _incidentTarget(provider) ??
+                            provider.currentPosition ??
+                            const LatLng(14.6544, 120.9840),
+                        initialZoom: 15,
+                        interactionOptions: kRescueMapInteractions,
+                        keepAlive: true,
                       ),
+                      children: [
+                        const RescueMapTileLayer(),
+                        ...BarangayCoverage.mapLayers(
+                          barangayId: provider.citizenBarangayId,
+                        ),
+                        MarkerLayer(markers: _citizenIncidentMarkers(provider)),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    IconButton.filled(
-                      icon: const Icon(Icons.fullscreen),
-                      onPressed: () =>
-                          setState(() => _citizenMapFullScreen = true),
-                      tooltip: 'Expand map',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black54,
+                    Positioned(
+                      top: MediaQuery.of(context).padding.top + 8,
+                      right: 16,
+                      child: Column(
+                        children: [
+                          _mapCircleButton(
+                            icon: Icons.layers,
+                            tooltip: 'Map type & details',
+                            onPressed: () => showMapLayersSheet(context),
+                          ),
+                          const SizedBox(height: 10),
+                          _mapCircleButton(
+                            icon: Icons.crop_free,
+                            tooltip: 'Expand map',
+                            onPressed: () =>
+                                setState(() => _citizenMapFullScreen = true),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        const Color(0xFF0D1B2A).withValues(alpha: 0.95),
-                        const Color(0xFF0D1B2A),
-                      ],
+              Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  12,
+                  20,
+                  16 + MediaQuery.of(context).padding.bottom,
+                ),
+                decoration: const BoxDecoration(
+                  color: _sheetNavy,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _sheetHandle(),
+                    const SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: CircularProgressIndicator(
+                        color: Color(0xFFE53935),
+                        strokeWidth: 3.5,
+                      ),
                     ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(color: Colors.orange),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'SOS Sent — Waiting for Responder',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'SOS Sent — Waiting for Responder',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
                       ),
-                      const SizedBox(height: 8),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Please stay on the line. Help is on the way.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    _darkInfoTile(
+                      icon: Icons.description_outlined,
+                      iconColor: const Color(0xFFE53935),
+                      label: 'Request number',
+                      value: _sosRequestNumber(),
+                    ),
+                    const SizedBox(height: 10),
+                    _darkInfoTile(
+                      icon: Icons.phone_outlined,
+                      iconColor: const Color(0xFFE53935),
+                      label: 'Callback phone',
+                      value: _lastRequest!.hasCallbackPhone
+                          ? _lastRequest!.callbackPhone!.trim()
+                          : 'Not provided',
+                    ),
+                    if (_lastRequest!.locationIsPinned) ...[
+                      const SizedBox(height: 10),
                       Text(
-                        'Request #${_lastRequest!.id.substring(_lastRequest!.id.length - 6)}',
-                        style:
-                            TextStyle(color: Colors.grey[400], fontSize: 14),
+                        _lastRequest!.isProxyReport
+                            ? 'Pinned for ${_lastRequest!.reportedForName}'
+                            : 'Pinned incident location',
+                        style: const TextStyle(
+                          color: Colors.orangeAccent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                      if (_lastRequest!.locationIsPinned) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          _lastRequest!.isProxyReport
-                              ? 'Pinned for ${_lastRequest!.reportedForName}'
-                              : 'Pinned incident location',
-                          style: const TextStyle(
-                            color: Colors.orangeAccent,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                      if (_lastRequest!.hasCallbackPhone) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          'Callback: ${_lastRequest!.callbackPhone}',
-                          style: const TextStyle(
-                            color: Colors.lightGreenAccent,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                      if (_lastRequest!.hasScenePhoto)
-                        SosScenePhotoThumb(
-                          photoUrl: _lastRequest!.scenePhotoUrl,
-                          height: 96,
-                        ),
-                      const SizedBox(height: 16),
-                      if (_dispatchInfo == null)
-                        SizedBox(
-                          width: double.infinity,
-                          child: TextButton.icon(
-                            onPressed: () => _showCancelSOSDialog(),
-                            icon: const Icon(Icons.cancel, color: Colors.white70),
-                            label: const Text(
-                              'Cancel SOS',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                            style: TextButton.styleFrom(
-                              backgroundColor: Colors.white12,
-                            ),
-                          ),
-                        ),
                     ],
-                  ),
+                    if (_lastRequest!.hasScenePhoto) ...[
+                      const SizedBox(height: 10),
+                      SosScenePhotoThumb(
+                        photoUrl: _lastRequest!.scenePhotoUrl,
+                        height: 96,
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    if (_dispatchInfo == null)
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: FilledButton.icon(
+                          onPressed: () => _showCancelSOSDialog(),
+                          icon: const Icon(Icons.close),
+                          label: const Text(
+                            'Cancel SOS',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 16,
+                            ),
+                          ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFE53935),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
@@ -2853,471 +3010,488 @@ class _SOSScreenState extends State<SOSScreen>
       }
     }
 
+    final sosType = _lastRequest?.sosType ?? SOSType.medical;
+    final typeColor = _colorForSOSType(sosType);
+    final unitPhone = _unitPhoneNumber();
+    int? etaMinutes = progressEta;
+    if (etaMinutes == null &&
+        etaText.endsWith(' min') &&
+        !etaText.startsWith('Less')) {
+      etaMinutes = int.tryParse(etaText.split(' ').first);
+    }
+    final arrivingBy = etaMinutes == null
+        ? null
+        : _clockLabel(DateTime.now().add(Duration(minutes: etaMinutes)));
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1B2A),
-      body: Stack(
+      backgroundColor: _mapNavy,
+      body: Column(
         children: [
-          Consumer<RescueProvider>(
-            builder: (context, provider, _) {
-              return FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: _incidentTarget(provider) ??
-                      provider.currentPosition ??
-                      _lastRequest!.location,
-                  initialZoom: 14,
-                  interactionOptions: kRescueMapInteractions,
-                  keepAlive: true,
+          Container(
+            color: _mapNavy,
+            padding: EdgeInsets.fromLTRB(
+              4,
+              MediaQuery.of(context).padding.top + 4,
+              12,
+              8,
+            ),
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: () => _confirmBackToMain(context),
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
                 ),
-                children: [
-                  const RescueMapTileLayer(),
-                  ...BarangayCoverage.mapLayers(
-                    barangayId: provider.citizenBarangayId,
-                  ),
-
-                  if (_routeAhead.length >= 2)
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: _routeAhead,
-                          color: Colors.blue,
-                          strokeWidth: 5,
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Live Tracking',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
                         ),
-                      ],
-                    ),
-
-                  MarkerLayer(
-                    markers: [
-                      ..._citizenIncidentMarkers(provider),
-
-                      if (_responderPosition != null)
-                        Marker(
-                          point: _responderPosition!,
-                          width: 56,
-                          height: 56,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              shape: BoxShape.circle,
-                              border:
-                                  Border.all(color: Colors.white, width: 3),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.green.withValues(alpha: 0.6),
-                                  blurRadius: 14,
-                                  spreadRadius: 3,
-                                ),
-                              ],
-                            ),
-                            child:
-                                Icon(unitIcon, color: Colors.white, size: 26),
-                          ),
-                        ),
-                      if (_dispatchRoutingTo == 'facility' &&
-                          _dispatchDestinationPosition != null)
-                        Marker(
-                          point: _dispatchDestinationPosition!,
-                          width: 56,
-                          height: 56,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 3),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.red.withValues(alpha: 0.55),
-                                  blurRadius: 14,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: const Icon(
-                              Icons.local_hospital,
-                              color: Colors.white,
-                              size: 26,
-                            ),
-                          ),
-                        ),
+                      ),
+                      Text(
+                        'Responder is on the way',
+                        style: TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
                     ],
                   ),
-                ],
-              );
-            },
+                ),
+                _mapCircleButton(
+                  icon: Icons.layers,
+                  tooltip: 'Map type & details',
+                  onPressed: () => showMapLayersSheet(context),
+                ),
+                const SizedBox(width: 8),
+                _mapCircleButton(
+                  icon: Icons.crop_free,
+                  tooltip: 'Expand map',
+                  onPressed: () =>
+                      setState(() => _citizenMapFullScreen = true),
+                ),
+              ],
+            ),
           ),
-
-          // Top info + persistent status cards (stacked to avoid overlap on small screens)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 8,
-            left: 12,
-            right: 12,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+          Expanded(
+            child: Stack(
               children: [
-                Card(
-                    elevation: 6,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20)),
-                    color: const Color(0xFF1B3A5C).withValues(alpha: 0.95),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: statusBg.withValues(alpha: 0.28),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  statusIcon,
-                                  color: statusIconColor,
-                                  size: 28,
+                Consumer<RescueProvider>(
+                  builder: (context, provider, _) {
+                    return FlutterMap(
+                      mapController: _mapController,
+                      options: MapOptions(
+                        initialCenter: _incidentTarget(provider) ??
+                            provider.currentPosition ??
+                            _lastRequest!.location,
+                        initialZoom: 14,
+                        interactionOptions: kRescueMapInteractions,
+                        keepAlive: true,
+                      ),
+                      children: [
+                        const RescueMapTileLayer(),
+                        ...BarangayCoverage.mapLayers(
+                          barangayId: provider.citizenBarangayId,
+                        ),
+                        if (_routeAhead.length >= 2)
+                          PolylineLayer(
+                            polylines: [
+                              Polyline(
+                                points: _routeAhead,
+                                color: const Color(0xFF64B5F6).withValues(alpha: 0.35),
+                                strokeWidth: 12,
+                              ),
+                              Polyline(
+                                points: _routeAhead,
+                                color: const Color(0xFF2196F3),
+                                strokeWidth: 5,
+                              ),
+                            ],
+                          ),
+                        MarkerLayer(
+                          markers: [
+                            ..._citizenIncidentMarkers(provider),
+                            if (_responderPosition != null)
+                              Marker(
+                                point: _responderPosition!,
+                                width: 56,
+                                height: 56,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.green,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white, width: 3),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.green.withValues(alpha: 0.6),
+                                        blurRadius: 14,
+                                        spreadRadius: 3,
+                                      ),
+                                    ],
+                                  ),
+                                  child: Icon(unitIcon, color: Colors.white, size: 26),
                                 ),
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Help is on the way!',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '$unitCallSign  •  ${_unitTypeLabelForCitizen(unitType.toString())}',
-                                      style: const TextStyle(
-                                          color: Colors.white70, fontSize: 13),
-                                    ),
-                                    if (_liveStatusVisible &&
-                                        _liveStatusTitle != null) ...[
-                                      const SizedBox(height: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 4,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: statusBg.withValues(alpha: 0.22),
-                                          borderRadius: BorderRadius.circular(999),
-                                          border: Border.all(
-                                            color: Colors.white24,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          _liveStatusTitle!,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
+                            if (_dispatchRoutingTo == 'facility' &&
+                                _dispatchDestinationPosition != null)
+                              Marker(
+                                point: _dispatchDestinationPosition!,
+                                width: 56,
+                                height: 56,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.red,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white, width: 3),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.red.withValues(alpha: 0.55),
+                                        blurRadius: 14,
+                                        spreadRadius: 2,
                                       ),
                                     ],
-                                    if (_liveStatusVisible &&
-                                        _liveStatusSubtitle != null) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        _liveStatusSubtitle!,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
-                                  ],
+                                  ),
+                                  child: const Icon(
+                                    Icons.local_hospital,
+                                    color: Colors.white,
+                                    size: 26,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                if (_lastRequest != null)
+                  Positioned(
+                    left: 16,
+                    bottom: 16,
+                    child: Material(
+                      color: const Color(0xFFE53935),
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        onTap: () => _showCancelSOSDialog(),
+                        borderRadius: BorderRadius.circular(14),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          child: Row(
+                            children: [
+                              Icon(Icons.cancel_outlined, color: Colors.white, size: 18),
+                              SizedBox(width: 6),
+                              Text(
+                                'Cancel SOS',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
                                 ),
                               ),
                             ],
                           ),
-                          if (dispatchPhase != null || nextInstruction != null) ...[
-                            const SizedBox(height: 10),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white24),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (dispatchPhase != null)
-                                    Text(
-                                      'Status: $dispatchPhase',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  if (destinationName != null &&
-                                      destinationName.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(
-                                        'Destination: $destinationName',
-                                        style: const TextStyle(
-                                            color: Colors.white70, fontSize: 12),
-                                      ),
-                                    ),
-                                  if (nextInstruction != null &&
-                                      nextInstruction.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: Text(
-                                        nextInstruction,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  if (progressDistanceM != null || progressEta != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: Text(
-                                        '${progressDistanceM != null ? '$progressDistanceM m' : ''}${progressDistanceM != null && progressEta != null ? ' • ' : ''}${progressEta != null ? '$progressEta min' : ''}',
-                                        style: const TextStyle(
-                                            color: Colors.white70, fontSize: 12),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ],
-                          if (_responderPosition != null &&
-                              distText.isNotEmpty) ...[
-                            const SizedBox(height: 14),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      children: [
-                                        const Text('DISTANCE',
-                                            style: TextStyle(
-                                                color: Colors.white54,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w600)),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          distText,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Container(
-                                    width: 1,
-                                    height: 36,
-                                    color: Colors.white24,
-                                  ),
-                                  Expanded(
-                                    child: Column(
-                                      children: [
-                                        const Text('ETA',
-                                            style: TextStyle(
-                                                color: Colors.white54,
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w600)),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          etaText,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                          if (_responderPosition == null) ...[
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.orange,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Text(
-                                  'Locating responder...',
-                                  style: TextStyle(
-                                      color: Colors.grey[400], fontSize: 13),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ],
+                        ),
                       ),
                     ),
                   ),
+                Positioned(
+                  right: 16,
+                  bottom: 16,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ChatFabWithBadge(
+                        sosId: _lastRequest!.id,
+                        myRole: 'citizen',
+                        suppressNotifications: _chatSheetOpen,
+                        onPressed: _openCitizenChatSheet,
+                      ),
+                      const SizedBox(height: 10),
+                      _mapCircleButton(
+                        icon: Icons.open_with,
+                        tooltip: 'Fit map',
+                        onPressed: _fitBothMarkers,
+                      ),
+                      const SizedBox(height: 10),
+                      _mapCircleButton(
+                        icon: Icons.my_location,
+                        tooltip: 'My location',
+                        onPressed: () {
+                          final pos =
+                              context.read<RescueProvider>().currentPosition;
+                          if (pos != null) _mapController.move(pos, 16);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
-
-          // Cancel SOS (tracking): allowed while SOS active — extra confirmations after dispatch
-          if (_lastRequest != null)
-            Positioned(
-              bottom: 24,
-              left: 16,
-              child: TextButton.icon(
-                onPressed: () => _showCancelSOSDialog(),
-                icon: Icon(
-                  Icons.cancel,
-                  color: _dispatchInfo != null ? Colors.orange.shade200 : Colors.white70,
-                  size: 20,
-                ),
-                label: Text(
-                  'Cancel SOS',
-                  style: TextStyle(
-                    color: _dispatchInfo != null
-                        ? Colors.orange.shade100
-                        : Colors.white70,
-                  ),
-                ),
-                style: TextButton.styleFrom(
-                  backgroundColor: const Color(0xFF1B3A5C).withValues(alpha: 0.9),
-                ),
-              ),
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.fromLTRB(
+              20,
+              10,
+              20,
+              12 + MediaQuery.of(context).padding.bottom,
             ),
-
-          // Message & map FABs
-          Positioned(
-            bottom: 24,
-            right: 16,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton.filled(
-                  icon: const Icon(Icons.layers, color: Colors.white),
-                  onPressed: () => showMapLayersSheet(context),
-                  tooltip: 'Map type & details',
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF1B3A5C).withValues(alpha: 0.95),
-                    foregroundColor: Colors.white,
+            decoration: const BoxDecoration(
+              color: _sheetNavy,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.sizeOf(context).height * 0.5,
+                    ),
+                    child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _sheetHandle(),
+                  const Text(
+                    'Help is on the way',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                IconButton.filled(
-                  icon: const Icon(Icons.fullscreen, color: Colors.white),
-                  onPressed: () => setState(() => _citizenMapFullScreen = true),
-                  tooltip: 'Expand map',
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF1B3A5C).withValues(alpha: 0.95),
-                    foregroundColor: Colors.white,
+                  const SizedBox(height: 4),
+                  Text(
+                    _liveStatusSubtitle ??
+                        _liveStatusTitle ??
+                        'Responder accepted your SOS',
+                    style: const TextStyle(
+                      color: Color(0xFF81C784),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                ChatFabWithBadge(
-                  sosId: _lastRequest!.id,
-                  myRole: 'citizen',
-                  suppressNotifications: _chatSheetOpen,
-                  onPressed: () {
-                    final provider = context.read<RescueProvider>();
-                    setState(() => _chatSheetOpen = true);
-                    showModalBottomSheet<void>(
-                      context: context,
-                      isScrollControlled: true,
-                      backgroundColor: const Color(0xFF1B2838),
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-                      ),
-                      builder: (_) => DraggableScrollableSheet(
-                        initialChildSize: 0.6,
-                        minChildSize: 0.3,
-                        maxChildSize: 0.95,
-                        expand: false,
-                        builder: (_, scrollController) => Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Text(
-                                'Message rescuer',
-                                style: TextStyle(
-                                  color: Colors.grey[300],
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: statusBg.withValues(alpha: 0.22),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(statusIcon, color: statusIconColor, size: 26),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: typeColor.withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  _shortSosLabel(sosType).toUpperCase(),
+                                  style: TextStyle(
+                                    color: typeColor,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.6,
+                                  ),
                                 ),
                               ),
+                              const SizedBox(height: 4),
+                              Text(
+                                unitCallSign.toString(),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              Text(
+                                _responderPosition == null
+                                    ? 'Locating responder...'
+                                    : 'Responding to your location',
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (dispatchPhase != null ||
+                      nextInstruction != null ||
+                      (destinationName != null && destinationName.isNotEmpty)) ...[
+                    const SizedBox(height: 10),
+                    if (dispatchPhase != null)
+                      Text(
+                        'Status: $dispatchPhase',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    if (destinationName != null && destinationName.isNotEmpty)
+                      Text(
+                        'Destination: $destinationName',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    if (nextInstruction != null && nextInstruction.isNotEmpty)
+                      Text(
+                        nextInstruction,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Icon(Icons.schedule, color: Color(0xFF4FC3F7), size: 22),
+                      const SizedBox(width: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'ETA',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
                             ),
-                            Expanded(
-                              child: SOSChatPanel(
-                                sosId: _lastRequest!.id,
-                                senderRole: 'citizen',
-                                senderId: provider.citizenId ?? 'citizen',
-                                senderDisplayName:
-                                    provider.citizenName ?? 'Citizen',
-                                completedAt: null,
+                          ),
+                          Text(
+                            etaText.isNotEmpty
+                                ? etaText.replaceAll(' min', ' min')
+                                : (progressEta != null ? '$progressEta min' : '--'),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      if (arrivingBy != null)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text(
+                              'Arriving by',
+                              style: TextStyle(color: Colors.white54, fontSize: 11),
+                            ),
+                            Text(
+                              arrivingBy,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        )
+                      else if (distText.isNotEmpty || progressDistanceM != null)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text(
+                              'Distance',
+                              style: TextStyle(color: Colors.white54, fontSize: 11),
+                            ),
+                            Text(
+                              distText.isNotEmpty
+                                  ? distText
+                                  : '${progressDistanceM}m',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
                               ),
                             ),
                           ],
                         ),
+                    ],
+                  ),
+                  if (_lastRequest!.hasScenePhoto) ...[
+                    const SizedBox(height: 10),
+                    SosScenePhotoThumb(
+                      photoUrl: _lastRequest!.scenePhotoUrl,
+                      height: 80,
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    child: Material(
+                      color: const Color(0xFF2E7D32),
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        onTap: unitPhone == null
+                            ? _openCitizenChatSheet
+                            : () => _callPhone(unitPhone),
+                        borderRadius: BorderRadius.circular(14),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                unitPhone == null ? Icons.chat : Icons.phone,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 10),
+                              Column(
+                                children: [
+                                  Text(
+                                    unitPhone ?? 'Message rescuer',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  Text(
+                                    unitPhone == null
+                                        ? 'Chat is available now'
+                                        : 'Tap to call ${_unitTypeLabelForCitizen(unitType.toString()).toLowerCase()}',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ).whenComplete(() {
-                      if (mounted) setState(() => _chatSheetOpen = false);
-                    });
-                  },
-                ),
-                const SizedBox(height: 8),
-                FloatingActionButton.small(
-                  heroTag: 'fit-bounds',
-                  onPressed: _fitBothMarkers,
-                  backgroundColor:
-                      const Color(0xFF1B3A5C).withValues(alpha: 0.95),
-                  child: const Icon(Icons.zoom_out_map, color: Colors.white),
-                ),
-                const SizedBox(height: 8),
-                FloatingActionButton.small(
-                  heroTag: 'recenter-citizen',
-                  onPressed: () {
-                    final pos =
-                        context.read<RescueProvider>().currentPosition;
-                    if (pos != null) _mapController.move(pos, 16);
-                  },
-                  backgroundColor:
-                      const Color(0xFF1B3A5C).withValues(alpha: 0.95),
-                  child:
-                      const Icon(Icons.my_location, color: Colors.white),
-                ),
-              ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
             ),
           ),
         ],

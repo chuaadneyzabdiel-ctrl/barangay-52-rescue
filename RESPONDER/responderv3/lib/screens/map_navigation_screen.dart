@@ -2153,90 +2153,117 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
         : (_isCompleting ? 'Completing…' : 'Complete SOS');
 
     return Positioned(
-      bottom: 32,
-      left: 24,
-      right: 24,
-      child: Card(
-        color: Colors.green,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      bottom: 20,
+      left: 16,
+      right: 16,
+      child: Material(
+        color: const Color(0xFF152536),
+        elevation: 16,
+        borderRadius: BorderRadius.circular(22),
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Icon(
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 5,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+              ),
+              Text(
+                needsPickupConfirm ? 'Confirm pickup' : 'Complete response',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 50,
+                child: FilledButton.icon(
+                  onPressed: _isCompleting
+                      ? null
+                      : () async {
+                          if (needsPickupConfirm) {
+                            await _markArrivedManually();
+                            return;
+                          }
+                          setState(() => _isCompleting = true);
+                          try {
+                            final provider = context.read<RescueProvider>();
+                            await provider.firebaseSync.updateDispatchProgress(
+                              widget.sosRequest.id,
+                              status: 'completed',
+                              phase: 'completed',
+                            );
+                            await provider.completeSOS(widget.sosRequest);
+                            if (!mounted) return;
+                            setState(() {
+                              _sosEnded = true;
+                              _sosEndedReason = 'completed';
+                            });
+                            Navigator.pop(context, true);
+                          } catch (e) {
+                            await _handleResponderActionError(e);
+                          } finally {
+                            if (mounted) {
+                              setState(() => _isCompleting = false);
+                            }
+                          }
+                        },
+                  icon: Icon(
                     needsPickupConfirm
                         ? Icons.personal_injury
                         : Icons.check_circle,
-                    color: Colors.white,
-                    size: 32,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
+                  label: Text(
+                    primaryLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF2E7D32),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
                     ),
                   ),
-                ],
+                ),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: _isCompleting
-                          ? null
-                          : () async {
-                              if (needsPickupConfirm) {
-                                await _markArrivedManually();
-                                return;
-                              }
-                              setState(() => _isCompleting = true);
-                              try {
-                                final provider =
-                                    context.read<RescueProvider>();
-                                await provider.firebaseSync
-                                    .updateDispatchProgress(
-                                  widget.sosRequest.id,
-                                  status: 'completed',
-                                  phase: 'completed',
-                                );
-                                await provider.completeSOS(widget.sosRequest);
-                                if (!mounted) return;
-                                setState(() {
-                                  _sosEnded = true;
-                                  _sosEndedReason = 'completed';
-                                });
-                                Navigator.pop(context, true);
-                              } catch (e) {
-                                await _handleResponderActionError(e);
-                              } finally {
-                                if (mounted) {
-                                  setState(() => _isCompleting = false);
-                                }
-                              }
-                            },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.green.shade800,
-                      ),
-                      child: Text(primaryLabel),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 44,
+                child: FilledButton.icon(
+                  onPressed: _isCancelling ? null : _confirmCancelResponse,
+                  icon: const Icon(Icons.cancel_outlined),
+                  label: const Text(
+                    'Cancel response',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFE53935),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  TextButton(
-                    onPressed: _isCancelling ? null : _confirmCancelResponse,
-                    style: TextButton.styleFrom(foregroundColor: Colors.white),
-                    child: const Text('Cancel response'),
-                  ),
-                ],
+                ),
               ),
             ],
           ),
