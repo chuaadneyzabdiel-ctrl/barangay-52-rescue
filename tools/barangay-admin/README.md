@@ -31,5 +31,8 @@ Barangays 53–56 are created inactive until you check **Active**. Create 53–5
 
 - `/barangays/{id}` — `id`, `name`, `isActive`, `neighbors`, `mapCenter`
 - `/lgu_accounts/{username}` — username, `barangayId`, `isActive`, `passwordHash`, `passwordSalt`
+- `/barangay_tombstones/{id}` — set on delete so Seed and LGU app startup do not recreate that barangay; cleared when you Save the barangay again
+
+**Delete** removes the barangay row, strips it from other neighbor lists, deletes LGU accounts for that barangayId, and writes a tombstone. Barangay 52 and `brgy52` cannot be deleted.
 
 Passwords use the same hash as the LGU app: SHA-256 of `salt::password`. Plaintext is never stored.

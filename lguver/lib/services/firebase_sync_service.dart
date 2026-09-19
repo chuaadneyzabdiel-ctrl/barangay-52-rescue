@@ -1075,18 +1075,27 @@ class FirebaseSyncService {
   }
 
   Future<void> seedDefaultBarangaysIfMissing() async {
+    final tombstones = await _loadBarangayTombstones();
     for (final barangay in kBuiltInBarangays) {
+      if (tombstones.contains(barangay.id)) continue;
       final ref = _db.ref('barangays/${barangay.id}');
       final snap = await ref.get();
       if (!snap.exists) {
+        // Only auto-create the home demo barangay. Optional 53–56 are
+        // managed by barangay-admin and must stay deleted after remove.
+        if (barangay.id != kDefaultBarangayId) continue;
         await ref.set(barangay.toJson());
         continue;
       }
       final raw = snap.value;
       if (raw is! Map) continue;
       final current = BarangayRecord.fromJson(barangay.id, Map<dynamic, dynamic>.from(raw));
-      final neighbors = [...current.neighbors];
+      final neighbors = [
+        for (final n in current.neighbors)
+          if (!tombstones.contains(n)) n,
+      ];
       for (final n in barangay.neighbors) {
+        if (tombstones.contains(n)) continue;
         if (!neighbors.contains(n)) neighbors.add(n);
       }
       await ref.update({
@@ -1096,6 +1105,17 @@ class FirebaseSyncService {
           'lng': barangay.mapCenter.longitude,
         },
       });
+    }
+  }
+
+  Future<Set<String>> _loadBarangayTombstones() async {
+    try {
+      final snap = await _db.ref('barangay_tombstones').get();
+      final raw = snap.value;
+      if (raw is! Map) return <String>{};
+      return raw.keys.map((k) => k.toString()).toSet();
+    } catch (_) {
+      return <String>{};
     }
   }
 

@@ -67,6 +67,10 @@ DEMO_LGU_ACCOUNTS = [
     ("brgy56", "Brgy56Admin1", "56"),
 ]
 
+# RTDB path for intentionally deleted barangays. Seed skips these until
+# an admin recreates the barangay via PUT (which clears the tombstone).
+TOMBSTONES_PATH = "barangay_tombstones"
+
 
 def _json(data) -> bytes:
     return json.dumps(data).encode("utf-8")
@@ -84,6 +88,60 @@ def rtdb(path: str, method: str = "GET", body=None):
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Firebase {method} {path} failed: {exc.code} {detail}") from exc
+
+
+def list_tombstones() -> set[str]:
+    raw = rtdb(TOMBSTONES_PATH) or {}
+    if not isinstance(raw, dict):
+        return set()
+    return {str(key) for key in raw.keys()}
+
+
+def write_tombstone(barangay_id: str) -> None:
+    now = int(__import__("time").time() * 1000)
+    rtdb(
+        f"{TOMBSTONES_PATH}/{barangay_id}",
+        "PUT",
+        {"id": barangay_id, "deletedAt": now},
+    )
+
+
+def clear_tombstone(barangay_id: str) -> None:
+    rtdb(f"{TOMBSTONES_PATH}/{barangay_id}", "DELETE")
+
+
+def delete_accounts_for_barangay(barangay_id: str) -> list[str]:
+    rows = rtdb("lgu_accounts") or {}
+    if not isinstance(rows, dict):
+        return []
+    removed: list[str] = []
+    for username, row in rows.items():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("barangayId") or "").strip() != barangay_id:
+            continue
+        if str(username).lower() == "brgy52":
+            continue
+        rtdb(f"lgu_accounts/{username}", "DELETE")
+        removed.append(str(username))
+    return removed
+
+
+def strip_neighbor_refs(barangay_id: str) -> None:
+    rows = rtdb("barangays") or {}
+    if not isinstance(rows, dict):
+        return
+    for other_id, row in rows.items():
+        if not isinstance(row, dict) or str(other_id) == barangay_id:
+            continue
+        neighbors = parse_neighbors(row.get("neighbors"))
+        if barangay_id not in neighbors:
+            continue
+        rtdb(
+            f"barangays/{other_id}",
+            "PATCH",
+            {"neighbors": [n for n in neighbors if n != barangay_id]},
+        )
 
 
 def hash_password(password: str, salt: str) -> str:
@@ -136,33 +194,48 @@ def public_account(username: str, row: dict) -> dict:
 
 
 def seed_defaults() -> dict:
-    created = {"barangays": [], "accounts": [], "mergedNeighbors": []}
+    created = {
+        "barangays": [],
+        "accounts": [],
+        "mergedNeighbors": [],
+        "skippedTombstones": [],
+    }
+    tombstones = list_tombstones()
     existing_barangays = rtdb("barangays") or {}
     if not isinstance(existing_barangays, dict):
         existing_barangays = {}
     for barangay in DEFAULT_BARANGAYS:
-        current = existing_barangays.get(barangay["id"])
+        barangay_id = barangay["id"]
+        if barangay_id in tombstones:
+            created["skippedTombstones"].append(barangay_id)
+            continue
+        current = existing_barangays.get(barangay_id)
         if not isinstance(current, dict):
-            rtdb(f"barangays/{barangay['id']}", "PUT", barangay)
-            created["barangays"].append(barangay["id"])
+            rtdb(f"barangays/{barangay_id}", "PUT", barangay)
+            created["barangays"].append(barangay_id)
             continue
         neighbors = parse_neighbors(current.get("neighbors"))
         added = False
         for neighbor in barangay["neighbors"]:
+            if neighbor in tombstones:
+                continue
             if neighbor not in neighbors:
                 neighbors.append(neighbor)
                 added = True
         patch = {"mapCenter": barangay["mapCenter"]}
         if added:
             patch["neighbors"] = neighbors
-            created["mergedNeighbors"].append(barangay["id"])
-        rtdb(f"barangays/{barangay['id']}", "PATCH", patch)
+            created["mergedNeighbors"].append(barangay_id)
+        rtdb(f"barangays/{barangay_id}", "PATCH", patch)
 
     existing_accounts = rtdb("lgu_accounts") or {}
     if not isinstance(existing_accounts, dict):
         existing_accounts = {}
     now = int(__import__("time").time() * 1000)
     for username, password, barangay_id in DEMO_LGU_ACCOUNTS:
+        if barangay_id in tombstones:
+            created["skippedTombstones"].append(f"account:{username}")
+            continue
         if username in existing_accounts:
             continue
         salt = new_salt()
@@ -261,6 +334,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/barangays/"):
                 barangay_id = path.split("/api/barangays/", 1)[1].strip()
                 row = normalize_barangay(body, barangay_id)
+                clear_tombstone(row["id"])
                 rtdb(f"barangays/{row['id']}", "PUT", row)
                 self._send(200, _json({"ok": True, "barangay": row}))
                 return
@@ -311,8 +385,20 @@ class Handler(BaseHTTPRequestHandler):
                 barangay_id = path.split("/api/barangays/", 1)[1].strip()
                 if barangay_id == "52":
                     raise ValueError("Barangay 52 is the demo home barangay and cannot be deleted.")
+                strip_neighbor_refs(barangay_id)
+                removed_accounts = delete_accounts_for_barangay(barangay_id)
                 rtdb(f"barangays/{barangay_id}", "DELETE")
-                self._send(200, _json({"ok": True}))
+                write_tombstone(barangay_id)
+                self._send(
+                    200,
+                    _json(
+                        {
+                            "ok": True,
+                            "removedAccounts": removed_accounts,
+                            "tombstoned": True,
+                        }
+                    ),
+                )
                 return
             if path.startswith("/api/accounts/"):
                 username = path.split("/api/accounts/", 1)[1].strip().lower()
@@ -333,7 +419,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Barangay admin on http://{HOST}:{PORT}")
     print(f"Firebase RTDB: {RTDB}")
-    print("Writes barangays + lgu_accounts only. Does not wipe SOS or users.")
+    print("Writes barangays + lgu_accounts + barangay_tombstones. Does not wipe SOS or users.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -71,6 +71,7 @@
       <button class="primary" id="seed">Seed missing 52–56 + brgy52/brgy56</button>
       <button id="reload">Reload</button>
     </p>
+    <p class="hint">Delete removes the barangay, its LGU accounts, and writes a tombstone so seed / LGU open will not recreate it. Saving the barangay again clears the tombstone.</p>
     <p class="ok" id="status"></p>
     <p class="err" id="error"></p>
     <div class="grid">
@@ -168,10 +169,12 @@
         del.className = "danger";
         del.textContent = "Delete";
         del.onclick = async () => {
-          if (!confirm("Delete barangay " + row.id + "?")) return;
+          if (!confirm("Delete barangay " + row.id + "? This also removes its LGU accounts and blocks auto-reseed.")) return;
           try {
-            await api("/api/barangays/" + encodeURIComponent(row.id), { method: "DELETE" });
+            const result = await api("/api/barangays/" + encodeURIComponent(row.id), { method: "DELETE" });
             await reload();
+            const accounts = (result.removedAccounts || []).join(", ") || "none";
+            setMsg("Deleted barangay " + row.id + ". Removed accounts: " + accounts, "");
           } catch (e) { setMsg("", e.message); }
         };
         td.append(edit, del);
