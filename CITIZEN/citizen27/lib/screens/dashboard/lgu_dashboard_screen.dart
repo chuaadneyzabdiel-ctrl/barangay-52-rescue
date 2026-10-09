@@ -50,7 +50,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen> {
         provider.startFirebaseListeners();
         await provider.refreshLocationStatus();
         provider.initLocation();
-        final count = await provider.markOldSOSAsCompleted(olderThan: const Duration(hours: 2));
+        final count = await provider.markOldSOSAsCompleted(olderThan: const Duration(days: 30));
         if (mounted && count > 0) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('$count old SOS marked as completed.')),
@@ -847,7 +847,7 @@ class _LGUDashboardScreenState extends State<LGUDashboardScreen> {
                       child: OutlinedButton.icon(
                         onPressed: () async {
                           final count = await provider.markOldSOSAsCompleted(
-                            olderThan: const Duration(hours: 2),
+                            olderThan: const Duration(days: 30),
                           );
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(

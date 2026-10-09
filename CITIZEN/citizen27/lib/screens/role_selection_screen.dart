@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/rescue_provider.dart';
-import '../services/auth_service.dart';
 import 'auth/auth_choice_screen.dart';
 import 'citizen/sos_screen.dart';
 import 'legal/terms_conditions_screen.dart';
@@ -81,13 +80,14 @@ class RoleSelectionScreen extends StatelessWidget {
                         if (!context.mounted) return;
 
                         // Returning user: skip mode picker and open SOS directly.
+                        // A saved registered profile is enough; do not wait on a
+                        // Firebase user that is still restoring.
                         final existingName = provider.citizenName;
                         final shouldAutoResumeRegistered =
                             provider.isCitizenRegistered &&
-                                AuthService().currentUser != null;
-                        if (existingName != null &&
-                            existingName.trim().isNotEmpty &&
-                            shouldAutoResumeRegistered) {
+                                existingName != null &&
+                                existingName.trim().isNotEmpty;
+                        if (shouldAutoResumeRegistered) {
                           await provider.persistSessionRole(UserRole.citizen);
                           if (!context.mounted) return;
                           Navigator.push(

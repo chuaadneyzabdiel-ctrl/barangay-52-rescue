@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -168,6 +169,7 @@ class _SOSScreenState extends State<SOSScreen>
         setState(() => _lastRequest = sos);
         _startCancelPromptTimer();
       } else if (sos == null && mounted) {
+        if (await _sosStillActive(sosId)) return;
         await _handleSosEnded(sosId);
       }
     });
@@ -188,6 +190,7 @@ class _SOSScreenState extends State<SOSScreen>
         return;
       }
       if (mounted) {
+        final previousRouting = _dispatchRoutingTo;
         final routingTo = info['routingTo'] as String?;
         final destinationName = info['destinationName'] as String?;
         final dLat = (info['destinationLat'] as num?)?.toDouble();
@@ -198,6 +201,7 @@ class _SOSScreenState extends State<SOSScreen>
           _dispatchDestinationName = destinationName;
           _dispatchDestinationPosition =
               (dLat != null && dLng != null) ? LatLng(dLat, dLng) : null;
+          _rememberResponderFromDispatch(info);
         });
         if (!_notifiedResponderAssigned) {
           _notifiedResponderAssigned = true;
@@ -218,6 +222,7 @@ class _SOSScreenState extends State<SOSScreen>
         if (unitId != null && _responderLocationSub == null) {
           _startResponderTracking(provider, unitId);
         }
+        _refreshRouteForDispatchTarget(previousRouting, routingTo);
       }
     });
   }
@@ -500,6 +505,20 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
+  /// A blank Firebase snapshot can arrive before the write is visible.
+  /// Confirm the SOS is really gone before clearing the screen.
+  Future<bool> _sosStillActive(String sosId) async {
+    try {
+      final provider = context.read<RescueProvider>();
+      final live = await provider.firebaseSync
+          .getActiveSOSById(sosId)
+          .timeout(const Duration(seconds: 15));
+      return live != null;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<void> _handleSosEnded(String sosId) async {
     final provider = context.read<RescueProvider>();
     final status = await provider.firebaseSync.getSOSHistoryStatus(sosId);
@@ -702,6 +721,7 @@ class _SOSScreenState extends State<SOSScreen>
       _sosCompletedSub?.cancel();
       _sosCompletedSub = provider.firebaseSync.watchSOS(request.id).listen((sos) async {
         if (sos == null && mounted) {
+          if (await _sosStillActive(request.id)) return;
           await _handleSosEnded(request.id);
         }
       });
@@ -712,6 +732,16 @@ class _SOSScreenState extends State<SOSScreen>
           const SnackBar(
             content: Text('SOS Sent! Help is on the way.'),
             backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } on StateError catch (e) {
+      setState(() => _sending = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            backgroundColor: Colors.orange,
           ),
         );
       }
@@ -1012,6 +1042,7 @@ class _SOSScreenState extends State<SOSScreen>
       }
       if (!mounted) return;
 
+      final previousRouting = _dispatchRoutingTo;
       final routingTo = info['routingTo'] as String?;
       final destinationName = info['destinationName'] as String?;
       final dLat = (info['destinationLat'] as num?)?.toDouble();
@@ -1022,6 +1053,7 @@ class _SOSScreenState extends State<SOSScreen>
         _dispatchDestinationName = destinationName;
         _dispatchDestinationPosition =
             (dLat != null && dLng != null) ? LatLng(dLat, dLng) : null;
+        _rememberResponderFromDispatch(info);
       });
       if (!_notifiedResponderAssigned) {
         _notifiedResponderAssigned = true;
@@ -1043,6 +1075,7 @@ class _SOSScreenState extends State<SOSScreen>
       if (unitId != null && _responderLocationSub == null) {
         _startResponderTracking(provider, unitId);
       }
+      _refreshRouteForDispatchTarget(previousRouting, routingTo);
     });
   }
 
@@ -1106,7 +1139,7 @@ class _SOSScreenState extends State<SOSScreen>
     _responderLocationSub?.cancel();
     _responderLocationSub =
         provider.firebaseSync.watchUnitLocation(unitId).listen((pos) {
-      if (pos == null || !mounted) return;
+      if (pos == null || !mounted || !_isFiniteLatLng(pos)) return;
       setState(() => _responderPosition = pos);
       // Trim is instant via [_routeAhead]; only OSRM-rebuild when off the line.
       _scheduleCitizenRouteRefresh();
@@ -1260,15 +1293,120 @@ class _SOSScreenState extends State<SOSScreen>
     }
   }
 
+  bool _isFiniteLatLng(LatLng point) =>
+      point.latitude.isFinite && point.longitude.isFinite;
+
+  void _rememberResponderFromDispatch(Map<String, dynamic> info) {
+    final lat = (info['unitLat'] as num?)?.toDouble();
+    final lng = (info['unitLng'] as num?)?.toDouble();
+    if (lat == null || lng == null) return;
+    final pos = LatLng(lat, lng);
+    if (!_isFiniteLatLng(pos)) return;
+    _responderPosition = pos;
+  }
+
+  void _refreshRouteForDispatchTarget(String? previousRouting, String? routingTo) {
+    if (_responderPosition == null) return;
+    if (previousRouting != routingTo || _routeToMe.length < 2) {
+      unawaited(_refreshRoute(force: true));
+      return;
+    }
+    _scheduleCitizenRouteRefresh();
+  }
+
+  List<({LatLng point, double bearingDeg})> _routeArrowMarkers(List<LatLng> route) {
+    if (route.length < 2) return const [];
+    const everyKm = 0.18;
+    final totalKm = RouteGeoUtils.polylineLengthKm(route);
+    if (!totalKm.isFinite || totalKm < everyKm) return const [];
+    final out = <({LatLng point, double bearingDeg})>[];
+    var nextMarkKm = everyKm;
+    var acc = 0.0;
+    for (var i = 0; i < route.length - 1 && nextMarkKm < totalKm; i++) {
+      final a = route[i];
+      final b = route[i + 1];
+      if (!_isFiniteLatLng(a) || !_isFiniteLatLng(b)) continue;
+      final segKm = GeoUtils.haversineKm(a, b);
+      if (!segKm.isFinite || segKm <= 1e-9) continue;
+      while (nextMarkKm <= acc + segKm && nextMarkKm < totalKm) {
+        final t = ((nextMarkKm - acc) / segKm).clamp(0.0, 1.0);
+        final point = LatLng(
+          a.latitude + (b.latitude - a.latitude) * t,
+          a.longitude + (b.longitude - a.longitude) * t,
+        );
+        if (_isFiniteLatLng(point)) {
+          out.add((point: point, bearingDeg: GeoUtils.bearing(a, b)));
+        }
+        nextMarkKm += everyKm;
+      }
+      acc += segKm;
+    }
+    return out;
+  }
+
+  Widget _routeArrowLayer() {
+    final arrows = _routeArrowMarkers(_routeAhead);
+    if (arrows.isEmpty) return const SizedBox.shrink();
+    return MarkerLayer(
+      markers: [
+        for (final arrow in arrows)
+          Marker(
+            point: arrow.point,
+            width: 18,
+            height: 18,
+            child: IgnorePointer(
+              child: Transform.rotate(
+                angle: arrow.bearingDeg * math.pi / 180,
+                child: const Icon(
+                  Icons.navigation,
+                  size: 16,
+                  color: Color(0xFF1565C0),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  LatLng _safeMapCenter(RescueProvider provider) {
+    final candidates = <LatLng?>[
+      _incidentTarget(provider),
+      provider.currentPosition,
+      _lastRequest?.location,
+    ];
+    for (final point in candidates) {
+      if (point != null && _isFiniteLatLng(point)) return point;
+    }
+    return const LatLng(14.6470319, 120.9768745);
+  }
+
   void _fitBothMarkers() {
     final provider = context.read<RescueProvider>();
-    final incident = _incidentTarget(provider);
-    if (_responderPosition == null || incident == null) return;
+    final incident = _dispatchRoutingTo == 'facility' &&
+            _dispatchDestinationPosition != null &&
+            _isFiniteLatLng(_dispatchDestinationPosition!)
+        ? _dispatchDestinationPosition
+        : _incidentTarget(provider);
+    final responder = _responderPosition;
+    if (responder == null || incident == null) return;
+    if (!_isFiniteLatLng(incident) || !_isFiniteLatLng(responder)) return;
 
-    final bounds = LatLngBounds.fromPoints([incident, _responderPosition!]);
+    // Identical points (distance 0m) make flutter_map compute a NaN zoom.
+    final latSpan = (incident.latitude - responder.latitude).abs();
+    final lngSpan = (incident.longitude - responder.longitude).abs();
     try {
+      if (latSpan < 0.0004 && lngSpan < 0.0004) {
+        _mapController.move(incident, 16);
+        return;
+      }
+      final bounds = LatLngBounds.fromPoints([incident, responder]);
       _mapController.fitCamera(
-        CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(80)),
+        CameraFit.bounds(
+          bounds: bounds,
+          padding: const EdgeInsets.all(80),
+          maxZoom: 17,
+        ),
       );
     } catch (_) {}
   }
@@ -1535,9 +1673,7 @@ class _SOSScreenState extends State<SOSScreen>
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: _incidentTarget(provider) ??
-            provider.currentPosition ??
-            _lastRequest!.location,
+        initialCenter: _safeMapCenter(provider),
         initialZoom: 14,
         interactionOptions: kRescueMapInteractions,
         keepAlive: true,
@@ -1562,10 +1698,12 @@ class _SOSScreenState extends State<SOSScreen>
               ),
             ],
           ),
+        _routeArrowLayer(),
         MarkerLayer(
           markers: [
             ..._citizenIncidentMarkers(provider),
-            if (_responderPosition != null)
+            if (_responderPosition != null &&
+                _isFiniteLatLng(_responderPosition!))
               Marker(
                 point: _responderPosition!,
                 width: 56,
@@ -3083,9 +3221,7 @@ class _SOSScreenState extends State<SOSScreen>
                     return FlutterMap(
                       mapController: _mapController,
                       options: MapOptions(
-                        initialCenter: _incidentTarget(provider) ??
-                            provider.currentPosition ??
-                            _lastRequest!.location,
+                        initialCenter: _safeMapCenter(provider),
                         initialZoom: 14,
                         interactionOptions: kRescueMapInteractions,
                         keepAlive: true,
@@ -3110,10 +3246,12 @@ class _SOSScreenState extends State<SOSScreen>
                               ),
                             ],
                           ),
+                        _routeArrowLayer(),
                         MarkerLayer(
                           markers: [
                             ..._citizenIncidentMarkers(provider),
-                            if (_responderPosition != null)
+                            if (_responderPosition != null &&
+                                _isFiniteLatLng(_responderPosition!))
                               Marker(
                                 point: _responderPosition!,
                                 width: 56,
@@ -3324,7 +3462,9 @@ class _SOSScreenState extends State<SOSScreen>
                               Text(
                                 _responderPosition == null
                                     ? 'Locating responder...'
-                                    : 'Responding to your location',
+                                    : (_dispatchRoutingTo == 'facility'
+                                        ? 'En route to the hospital'
+                                        : 'Responding to your location'),
                                 style: TextStyle(
                                   color: Colors.grey[400],
                                   fontSize: 12,

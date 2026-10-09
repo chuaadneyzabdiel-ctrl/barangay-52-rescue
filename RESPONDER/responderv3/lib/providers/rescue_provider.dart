@@ -260,7 +260,7 @@ class RescueProvider extends ChangeNotifier {
           loginId: loginId,
           responderUnitId: unitId,
           sessionId: sessionId,
-          ttlMs: 120 * 1000,
+          ttlMs: 3 * 60 * 1000,
         );
       } catch (_) {
         // Best-effort heartbeat; validity checks enforce safety on actions.
@@ -277,26 +277,49 @@ class RescueProvider extends ChangeNotifier {
     String? unitId,
     bool logOnFailure = true,
   }) async {
-    final loginId = _currentResponderUnitLoginId;
-    final responderUnitId = unitId ?? _currentResponderSessionUnitId;
-    final sessionId = _currentResponderSessionId;
-    if (loginId == null || responderUnitId == null || sessionId == null) {
+    var loginId = _currentResponderUnitLoginId;
+    var responderUnitId = unitId ?? _currentResponderSessionUnitId;
+    var sessionId = _currentResponderSessionId;
+    loginId ??= await readResponderUnitLoginId();
+    responderUnitId ??= await readResponderSessionUnitId();
+    sessionId ??= await readResponderSessionId();
+    if (loginId == null ||
+        loginId.isEmpty ||
+        responderUnitId == null ||
+        responderUnitId.isEmpty ||
+        sessionId == null ||
+        sessionId.isEmpty) {
       return false;
     }
+    _currentResponderUnitLoginId = loginId;
+    _currentResponderSessionUnitId = responderUnitId;
+    _currentResponderSessionId = sessionId;
+    await _startResponderSessionHeartbeat();
+
     // Refresh TTL before validating so a slow Accept is not blocked by expiry.
     try {
       await _firebaseSync.heartbeatResponderSessionLocks(
         loginId: loginId,
         responderUnitId: responderUnitId,
         sessionId: sessionId,
-        ttlMs: 120 * 1000,
+        ttlMs: 3 * 60 * 1000,
       );
     } catch (_) {}
-    final ok = await _firebaseSync.isResponderSessionValid(
+    var ok = await _firebaseSync.isResponderSessionValid(
       loginId: loginId,
       responderUnitId: responderUnitId,
       sessionId: sessionId,
     );
+    if (!ok) {
+      // Lock is missing or belongs to a closed tab. Take it back for this sign-in.
+      final reclaimed = await _firebaseSync.acquireResponderSessionLocks(
+        loginId: loginId,
+        responderUnitId: responderUnitId,
+        sessionId: sessionId,
+        ttlMs: 3 * 60 * 1000,
+      );
+      ok = reclaimed.success;
+    }
     if (!ok && logOnFailure) {
       await _firebaseSync.logAuditEvent(
         action: 'SESSION_HEARTBEAT_TIMEOUT',
@@ -854,7 +877,7 @@ class RescueProvider extends ChangeNotifier {
         Timer.periodic(const Duration(minutes: 10), (_) async {
       try {
         await markOldSOSAsCompleted(
-          olderThan: const Duration(hours: 2),
+          olderThan: const Duration(days: 30),
         );
       } catch (_) {
         // Best-effort cleanup; ignore failures so streams keep running.
@@ -1363,7 +1386,7 @@ class RescueProvider extends ChangeNotifier {
       loginId: cleanId,
       responderUnitId: responderUnitId,
       sessionId: sessionId,
-      ttlMs: 120 * 1000,
+      ttlMs: 3 * 60 * 1000,
       deviceInfo: kIsWeb ? 'web' : 'mobile',
     );
     if (!lockRes.success) {
@@ -1375,7 +1398,7 @@ class RescueProvider extends ChangeNotifier {
           details: const {},
         );
         throw StateError(
-          'This account is already signed in on another device/tab. Log out there or wait 30 seconds.',
+          'This account is already signed in on another device/tab. Log out there, or wait about 2 minutes and sign in again.',
         );
       }
       await _firebaseSync.logAuditEvent(
@@ -1385,7 +1408,7 @@ class RescueProvider extends ChangeNotifier {
         details: const {},
       );
       throw StateError(
-        'This vehicle/unit is already in use by another active session. Log out there or wait 30 seconds.',
+        'This vehicle/unit is already in use by another active session. Log out there, or wait about 2 minutes and sign in again.',
       );
     }
     _currentResponderUnitLoginId = cleanId;
@@ -1464,7 +1487,27 @@ class RescueProvider extends ChangeNotifier {
   Future<void> loadActiveSOS() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _activeSosId = prefs.getString(_kActiveSosId);
+      final id = prefs.getString(_kActiveSosId);
+      if (id == null || id.isEmpty) {
+        _activeSosId = null;
+        notifyListeners();
+        return;
+      }
+      SOSRequest? live;
+      try {
+        live = await _firebaseSync
+            .getActiveSOSById(id)
+            .timeout(const Duration(seconds: 20));
+      } catch (_) {
+        _activeSosId = id;
+        notifyListeners();
+        return;
+      }
+      if (live == null) {
+        await clearActiveSOS();
+        return;
+      }
+      _activeSosId = id;
       notifyListeners();
     } catch (_) {}
   }
@@ -1536,7 +1579,7 @@ class RescueProvider extends ChangeNotifier {
               loginId: loginId,
               responderUnitId: unitId,
               sessionId: sessionId,
-              ttlMs: 120 * 1000,
+              ttlMs: 3 * 60 * 1000,
             );
           }
         } catch (_) {}
@@ -1613,7 +1656,7 @@ class RescueProvider extends ChangeNotifier {
               loginId: loginId,
               responderUnitId: unitId,
               sessionId: sessionId,
-              ttlMs: 120 * 1000,
+              ttlMs: 3 * 60 * 1000,
             );
           }
         } catch (_) {}
@@ -1761,12 +1804,24 @@ class RescueProvider extends ChangeNotifier {
       throw StateError(msg);
     }
 
-    // Prevent duplicate active SOS: if this citizen already has an active request, do not create another.
+    // Block only a SOS that is still live. A saved id from a finished request
+    // used to stick until the app was restarted or its data was cleared.
     if (_activeSosId != null) {
       final existing = _sosRequests.where((r) => r.id == _activeSosId && r.isActive).firstOrNull;
-      if (existing != null) {
+      SOSRequest? live = existing;
+      if (live == null) {
+        try {
+          live = await _firebaseSync
+              .getActiveSOSById(_activeSosId!)
+              .timeout(const Duration(seconds: 20));
+        } catch (_) {
+          live = null;
+        }
+      }
+      if (live != null) {
         throw StateError('You already have an active SOS. Cancel it first or wait for help.');
       }
+      await clearActiveSOS();
     }
 
     final request = SOSRequest(
@@ -1822,7 +1877,7 @@ class RescueProvider extends ChangeNotifier {
   }
 
   /// Marks all SOS older than [olderThan] as completed (moves to history). Returns count moved.
-  Future<int> markOldSOSAsCompleted({Duration olderThan = const Duration(hours: 24)}) async {
+  Future<int> markOldSOSAsCompleted({Duration olderThan = const Duration(days: 30)}) async {
     final list = await _firebaseSync.getActiveSOSOnce();
     final cutoff = DateTime.now().subtract(olderThan);
     int count = 0;

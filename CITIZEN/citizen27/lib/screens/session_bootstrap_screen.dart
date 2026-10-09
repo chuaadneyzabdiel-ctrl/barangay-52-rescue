@@ -21,6 +21,12 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _route());
   }
 
+  bool _hasLocalCitizenProfile(RescueProvider provider) {
+    final name = provider.citizenName?.trim() ?? '';
+    final id = provider.citizenId?.trim() ?? '';
+    return name.isNotEmpty && id.isNotEmpty;
+  }
+
   Future<void> _route() async {
     final provider = context.read<RescueProvider>();
     await provider.loadCitizenProfile();
@@ -38,30 +44,28 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
 
     switch (role) {
       case UserRole.citizen:
-        final authUser = AuthService().currentUser;
-        if (authUser != null) {
-          final loaded = await provider.loadRegisteredCitizenProfile(
-            authUser.uid,
-            fallbackEmail: authUser.email,
-          );
+        if (provider.isCitizenRegistered) {
+          final authUser = await AuthService().waitForRestoredUser();
           if (!mounted) return;
-          if (loaded) {
+          var loaded = false;
+          if (authUser != null) {
+            try {
+              loaded = await provider.loadRegisteredCitizenProfile(
+                authUser.uid,
+                fallbackEmail: authUser.email,
+              );
+            } catch (_) {
+              loaded = false;
+            }
+          }
+          if (!mounted) return;
+          if (loaded || _hasLocalCitizenProfile(provider)) {
             Navigator.of(context).pushReplacement(
               MaterialPageRoute<void>(builder: (_) => const SOSScreen()),
             );
             return;
           }
           await provider.clearPersistedSessionKeys();
-          if (!mounted) return;
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute<void>(builder: (_) => const RoleSelectionScreen()),
-          );
-          return;
-        }
-
-        if (provider.isCitizenRegistered) {
-          await provider.clearPersistedSessionKeys();
-          await provider.clearCitizenLocalPrefs();
           if (!mounted) return;
           Navigator.of(context).pushReplacement(
             MaterialPageRoute<void>(builder: (_) => const RoleSelectionScreen()),

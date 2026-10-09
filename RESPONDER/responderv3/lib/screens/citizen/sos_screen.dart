@@ -117,6 +117,7 @@ class _SOSScreenState extends State<SOSScreen>
         setState(() => _lastRequest = sos);
         _startCancelPromptTimer();
       } else if (sos == null && mounted) {
+        if (await _sosStillActive(sosId)) return;
         await _handleSosEnded(sosId);
       }
     });
@@ -311,6 +312,20 @@ class _SOSScreenState extends State<SOSScreen>
     );
   }
 
+  /// A blank Firebase snapshot can arrive before the write is visible.
+  /// Confirm the SOS is really gone before clearing the screen.
+  Future<bool> _sosStillActive(String sosId) async {
+    try {
+      final provider = context.read<RescueProvider>();
+      final live = await provider.firebaseSync
+          .getActiveSOSById(sosId)
+          .timeout(const Duration(seconds: 15));
+      return live != null;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<void> _handleSosEnded(String sosId) async {
     final provider = context.read<RescueProvider>();
     final status = await provider.firebaseSync.getSOSHistoryStatus(sosId);
@@ -405,6 +420,7 @@ class _SOSScreenState extends State<SOSScreen>
       _sosCompletedSub?.cancel();
       _sosCompletedSub = provider.firebaseSync.watchSOS(request.id).listen((sos) async {
         if (sos == null && mounted) {
+          if (await _sosStillActive(request.id)) return;
           await _handleSosEnded(request.id);
         }
       });
@@ -415,6 +431,16 @@ class _SOSScreenState extends State<SOSScreen>
           const SnackBar(
             content: Text('SOS Sent! Help is on the way.'),
             backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } on StateError catch (e) {
+      setState(() => _sending = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            backgroundColor: Colors.orange,
           ),
         );
       }

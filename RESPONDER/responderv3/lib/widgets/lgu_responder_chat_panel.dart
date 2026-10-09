@@ -38,7 +38,7 @@ class _LguResponderChatPanelState extends State<LguResponderChatPanel> {
   bool get _canSend {
     if (widget.readOnly) return false;
     if (widget.completedAt == null) return true;
-    final lockAt = widget.completedAt!.add(const Duration(hours: 2));
+    final lockAt = widget.completedAt!.add(const Duration(days: 30));
     return DateTime.now().isBefore(lockAt);
   }
 

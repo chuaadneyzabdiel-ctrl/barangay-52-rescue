@@ -25,7 +25,7 @@ class OsrmRoutingService {
       '?number=1',
     );
     try {
-      final response = await _client.get(url).timeout(const Duration(seconds: 10));
+      final response = await _client.get(url).timeout(const Duration(minutes: 2));
       if (response.statusCode != 200) return point;
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       if (json['code'] != 'Ok') return point;
@@ -58,7 +58,7 @@ class OsrmRoutingService {
 
     try {
       final response = await _client.get(url).timeout(
-        const Duration(seconds: 10),
+        const Duration(minutes: 2),
       );
 
       if (response.statusCode != 200) return [];
@@ -113,7 +113,7 @@ class OsrmRoutingService {
 
     try {
       final response = await _client.get(url).timeout(
-        const Duration(seconds: 10),
+        const Duration(minutes: 2),
       );
 
       if (response.statusCode != 200) return OsrmRouteResult.empty();

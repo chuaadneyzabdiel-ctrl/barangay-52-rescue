@@ -313,6 +313,11 @@ class FirebaseSyncService {
   }
 
   bool _lockIsExpired(Map<Object?, Object?> value, int nowMs) {
+    final lastSeen = (value['lastSeenAt'] as num?)?.toInt() ?? 0;
+    // Heartbeat is every 5s. No heartbeat for 2 minutes means that tab is gone,
+    // even if expiresAt was written far in the future.
+    const staleAfterMs = 2 * 60 * 1000;
+    if (lastSeen > 0 && (nowMs - lastSeen) > staleAfterMs) return true;
     final expires = (value['expiresAt'] as num?)?.toInt() ?? 0;
     return expires <= nowMs;
   }
@@ -349,7 +354,7 @@ class FirebaseSyncService {
     required String loginId,
     required String responderUnitId,
     required String sessionId,
-    int ttlMs = 30 * 1000,
+    int ttlMs = 3 * 60 * 1000,
     String? deviceInfo,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -397,7 +402,7 @@ class FirebaseSyncService {
     required String loginId,
     required String responderUnitId,
     required String sessionId,
-    int ttlMs = 30 * 1000,
+    int ttlMs = 3 * 60 * 1000,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final patch = {
@@ -434,18 +439,16 @@ class FirebaseSyncService {
     required String responderUnitId,
     required String sessionId,
   }) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
     final loginSnap = await _db.ref('unit_sessions/by_login/$loginId').get();
     final unitSnap = await _db.ref('unit_sessions/by_unit/$responderUnitId').get();
     if (!loginSnap.exists || !unitSnap.exists) return false;
     if (loginSnap.value is! Map || unitSnap.value is! Map) return false;
     final loginMap = Map<Object?, Object?>.from(loginSnap.value as Map);
     final unitMap = Map<Object?, Object?>.from(unitSnap.value as Map);
-    final loginOk = _belongsToSession(loginMap, sessionId) &&
-        !_lockIsExpired(loginMap, now);
-    final unitOk = _belongsToSession(unitMap, sessionId) &&
-        !_lockIsExpired(unitMap, now);
-    return loginOk && unitOk;
+    // Own session stays valid while this device is signed in.
+    // Stale lastSeen only lets a different login take the lock over.
+    return _belongsToSession(loginMap, sessionId) &&
+        _belongsToSession(unitMap, sessionId);
   }
 
   Future<void> releaseResponderSessionLocks({
@@ -544,7 +547,7 @@ class FirebaseSyncService {
         );
       }
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      const staleMs = 20 * 1000; // Hide units with no heartbeat for 20s.
+      const staleMs = 6 * 60 * 60 * 1000; // Keep units visible for 6h without a heartbeat.
       final units = <RescueUnit>[];
       final spoofLockedUnitIds = <String>{};
 
@@ -656,7 +659,7 @@ class FirebaseSyncService {
       final data = event.snapshot.value as Map?;
       if (data == null) return <SOSRequest>[];
       final list = <SOSRequest>[];
-      final cutoff = DateTime.now().subtract(const Duration(days: 7));
+      final cutoff = DateTime.now().subtract(const Duration(days: 30));
       for (final e in data.entries) {
         try {
           final value = e.value;
@@ -846,6 +849,7 @@ class FirebaseSyncService {
     String? routingTo,
     String? destinationName,
     LatLng? destinationLocation,
+    LatLng? unitLocation,
   }) async {
     final payload = <String, Object?>{
       if (status != null) 'status': status,
@@ -857,6 +861,8 @@ class FirebaseSyncService {
       if (destinationName != null) 'destinationName': destinationName,
       if (destinationLocation != null) 'destinationLat': destinationLocation.latitude,
       if (destinationLocation != null) 'destinationLng': destinationLocation.longitude,
+      if (unitLocation != null) 'unitLat': unitLocation.latitude,
+      if (unitLocation != null) 'unitLng': unitLocation.longitude,
       'updatedAt': ServerValue.timestamp,
     };
     await _db.ref('dispatch/$sosId').update(payload);

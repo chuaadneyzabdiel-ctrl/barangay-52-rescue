@@ -13,6 +13,23 @@ class AuthService {
 
   Stream<User?> authStateChanges() => _auth.authStateChanges();
 
+  /// Firebase often reports [currentUser] as null until the saved login is restored.
+  /// Wait for that user instead of treating a cold start as a logout.
+  Future<User?> waitForRestoredUser({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    final existing = _auth.currentUser;
+    if (existing != null) return existing;
+    try {
+      return await _auth
+          .authStateChanges()
+          .firstWhere((user) => user != null)
+          .timeout(timeout);
+    } catch (_) {
+      return _auth.currentUser;
+    }
+  }
+
   Future<UserCredential> signIn({
     required String email,
     required String password,

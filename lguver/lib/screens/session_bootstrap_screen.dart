@@ -77,7 +77,7 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
           );
           final lockOk = await provider
               .ensureResponderSessionIsValid(unitId: unitId)
-              .timeout(const Duration(seconds: 8), onTimeout: () => false);
+              .timeout(const Duration(minutes: 5), onTimeout: () => false);
           if (!lockOk) {
             await provider.clearPersistedSessionKeys();
             await _goToRoleSelection();

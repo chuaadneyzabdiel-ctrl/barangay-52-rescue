@@ -55,7 +55,7 @@ class ReverseGeocodingService {
               'Accept-Language': 'en-PH,en,fil',
             },
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(minutes: 2));
       if (response.statusCode != 200) {
         _cache[key] = coordinatesLabel(point);
         return;

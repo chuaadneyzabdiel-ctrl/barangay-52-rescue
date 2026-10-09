@@ -82,7 +82,7 @@ def rtdb(path: str, method: str = "GET", body=None):
     req = urllib.request.Request(url, data=payload, method=method)
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw and raw != "null" else None
     except urllib.error.HTTPError as exc:

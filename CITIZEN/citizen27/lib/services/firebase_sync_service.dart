@@ -250,7 +250,7 @@ class FirebaseSyncService {
       final data = event.snapshot.value as Map?;
       if (data == null) return <RescueUnit>[];
       final nowMs = DateTime.now().millisecondsSinceEpoch;
-      const staleMs = 20 * 1000; // Hide units with no heartbeat for 20s.
+      const staleMs = 6 * 60 * 60 * 1000; // Keep units visible for 6h without a heartbeat.
       final units = <RescueUnit>[];
 
       for (final e in data.entries) {
@@ -348,7 +348,7 @@ class FirebaseSyncService {
       final data = event.snapshot.value as Map?;
       if (data == null) return <SOSRequest>[];
       final list = <SOSRequest>[];
-      final cutoff = DateTime.now().subtract(const Duration(days: 7));
+      final cutoff = DateTime.now().subtract(const Duration(days: 30));
       for (final e in data.entries) {
         try {
           final value = e.value;
@@ -369,6 +369,18 @@ class FirebaseSyncService {
       }
       return list;
     });
+  }
+
+  /// One-shot read of an active SOS. Null when it is gone or no longer active.
+  Future<SOSRequest?> getActiveSOSById(String sosId) async {
+    final snap = await _db.ref('active_sos/$sosId').get();
+    final data = snap.value;
+    if (data is! Map) return null;
+    final v = Map<String, dynamic>.from(data);
+    v['id'] = sosId;
+    final request = SOSRequest.fromJson(v);
+    if (!request.isActive) return null;
+    return request;
   }
 
   /// Streams a single SOS request (for the citizen to watch status changes).

@@ -440,6 +440,7 @@ class _MapNavigationScreenState extends State<MapNavigationScreen> {
           ? (_selectedFacility?.name ?? 'Selected facility')
           : 'SOS location',
       destinationLocation: target,
+      unitLocation: driver,
     );
   }
 
